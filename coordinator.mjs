@@ -17,7 +17,10 @@ export function commandMode(update, owner, destination=null, botUsername='') {
   const message = update.message || {}, chat = message.chat || {};
   const authorized=chat.type==='private' && String(chat.id)===String(owner) ||
     ['group','supergroup'].includes(chat.type) && String(chat.id)===destination?.chatId;
-  return Number.isSafeInteger(update.update_id) && authorized && commandName(update,botUsername)==='/latest' ? 'latest' : null;
+  if (!Number.isSafeInteger(update.update_id) || !authorized) return null;
+  const command=commandName(update,botUsername);
+  if (command==='/latest') return 'latest';
+  return REPORTS.find(item=>command==='/'+item.command)?.kind||null;
 }
 
 function sourceAllowed(url) {
@@ -43,6 +46,10 @@ export function reportEnd(title) {
 export function documentName(title) {
   const text=String(title).replace(/\s+/g,' ').toLowerCase();
   const months=['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+  const otherMonths=['январе','феврале','марте','апреле','мае','июне','июле','августе','сентябре','октябре','ноябре','декабре'];
+  const monthMap=Object.fromEntries([...months.map((m,i)=>[m,i]),...otherMonths.map((m,i)=>[m,i])]);
+  const monthPattern=Object.keys(monthMap).join('|');
+  const prefix=REPORTS.find(item=>item.prefixes.some(p=>text.startsWith(p)))?.file_prefix||'Росстат';
   try {
     const format=value=>value.split('-').reverse().join('.');
     const quarter=text.match(/\b(iv|iii|ii|i)\s+квартал[а-я]*\s+(\d{4})/);
@@ -54,13 +61,27 @@ export function documentName(title) {
     }
     const end=reportEnd(text);
     const start=text.match(new RegExp('(?:^| )с\\s+(\\d{1,2})(?:\\s+('+months.join('|')+'))?(?:\\s+(\\d{4})(?:\\s+года?)?)?\\s+по\\s'));
-    if (!end || !start) return 'Rosstat.pdf';
+    if (!end || !start) {
+      const point=text.match(new RegExp('на\\s+конец\\s+('+monthPattern+')\\s+(\\d{4})'));
+      if (point) {
+        const last=new Date(Date.UTC(Number(point[2]),monthMap[point[1]]+1,0)).toISOString().slice(0,10);
+        return `${prefix}_на_${format(last)}.pdf`;
+      }
+      const period=text.match(new RegExp('(?:^| )(?:в|за)\\s+('+monthPattern+')(?:\\s*[-–]\\s*('+monthPattern+'))?\\s+(\\d{4})'));
+      if (!period) {
+        const annual=text.match(/(?:^| )(?:в|за)\s+(20\d{2})\s+год/);
+        return annual?`${prefix}_01.01.${annual[1]}-31.12.${annual[1]}.pdf`:'Rosstat.pdf';
+      }
+      const firstMonth=monthMap[period[1]],lastMonth=period[2]?monthMap[period[2]]:firstMonth,year=Number(period[3]);
+      const first=new Date(Date.UTC(year-(firstMonth>lastMonth?1:0),firstMonth,1)).toISOString().slice(0,10);
+      const last=new Date(Date.UTC(year,lastMonth+1,0)).toISOString().slice(0,10);
+      return `${prefix}_${format(first)}-${format(last)}.pdf`;
+    }
     const endMonth=Number(end.slice(5,7)),month=start[2]?months.indexOf(start[2])+1:endMonth;
     const year=start[3]?Number(start[3]):Number(end.slice(0,4))-(month>endMonth?1:0);
     const first=`${year}-${String(month).padStart(2,'0')}-${start[1].padStart(2,'0')}`;
     const date=new Date(first+'T00:00:00Z');
     if (!Number.isFinite(+date) || date.toISOString().slice(0,10)!==first || first>end) return 'Rosstat.pdf';
-    const prefix=text.startsWith('об оценке индекса потребительских цен')?'Инфляция':'Росстат';
     return `${prefix}_${format(first)}-${format(end)}.pdf`;
   } catch {return 'Rosstat.pdf';}
 }
@@ -69,6 +90,21 @@ function expectedEnd(start) {
   const date=new Date(start.slice(0,10)+'T00:00:00Z');
   date.setUTCDate(date.getUTCDate()-((date.getUTCDay()+6)%7));
   return date.toISOString().slice(0,10);
+}
+
+export function deliveryCaption(item,mode) {
+  const format=stamp=>{
+    if (!Number.isFinite(stamp)) return 'не указано';
+    const date=new Date((stamp+5*3600)*1000);
+    if (!Number.isFinite(+date)) return 'не указано';
+    const text=date.toISOString();
+    return text.slice(0,10).split('-').reverse().join('.')+' '+text.slice(11,19);
+  };
+  const publication=Number.isFinite(item.stamp)?format(item.stamp):'время не указано';
+  const catalogue=!Number.isFinite(item.stamp)&&/^\d{4}-\d{2}-\d{2}$/.test(item.catalogueDate||'')?
+    '\nДата файла в каталоге: '+item.catalogueDate.split('-').reverse().join('.'):'';
+  const footer=`Опубликовано Росстатом: ${publication}${catalogue}\nПолучено ботом: ${format(item.receivedStamp)}\nЕкатеринбург (UTC+5)\n${mode==='latest'?'Ручная загрузка':'Автоматическая доставка'}`;
+  return `${String(item.title||'Росстат')+'\n'+String(item.url||'')}`.slice(0,1023-footer.length)+'\n'+footer;
 }
 
 export function dueTargets(config, now) {
@@ -144,12 +180,13 @@ export class Coordinator {
     await this.store.put('coordinator', state);
   }
 
-  async manual(updateId) {
+  async manual(updateId,kind='inflation') {
+    if (!REPORT_KINDS.has(kind)) throw new Error('Unsupported report');
     return this.serial(async () => {
       const state=await this.state(), key=String(updateId);
       if (state.requests[key] && state.jobs[state.requests[key]]) return {id: state.requests[key], created: false};
       const id=crypto.randomUUID();
-      state.jobs[id]={id,kind:'inflation',mode:'latest',phase:'queued',createdAt:this.effects.now(),lastDispatch:0};
+      state.jobs[id]={id,kind,mode:'latest',phase:'queued',createdAt:this.effects.now(),lastDispatch:0};
       state.requests[key]=id;
       await this.save(state);
       return {id,created:true};
@@ -166,6 +203,7 @@ export class Coordinator {
         const id=crypto.randomUUID();
         state.jobs[id]={id,kind:target.kind,mode:'scheduled',not_before:dayStart(target.start),
           ...(target.kind==='inflation'?{report_end:target.report_end||expectedEnd(target.start)}:{}),
+          ...(target.kind==='gdp'?{gdp_period:target.gdp_period||target.id.match(/(\d{4}-Q[1-4])$/)?.[1]}:{}),
           start:target.start,targetId:target.id,phase:'queued',createdAt:now,lastDispatch:0};
       }
       await this.save(state);
@@ -200,6 +238,7 @@ export class Coordinator {
       const publicJob={id:job.id,kind:job.kind,mode:job.mode};
       if (job.mode==='scheduled') publicJob.not_before=job.not_before;
       if (job.report_end) publicJob.report_end=job.report_end;
+      if (job.gdp_period) publicJob.gdp_period=job.gdp_period;
       return {status:'ready',job:publicJob};
     });
   }
@@ -244,6 +283,10 @@ export class Coordinator {
       if (job.phase==='completed') return {status:'completed'};
       if (job.phase!=='running' || job.owner!==owner) throw new Error('Invalid lease');
       if (new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-' || bytes.length>25*1024*1024 || !sourceAllowed(item.url)) throw new Error('Invalid public document');
+      if (job.gdp_period) {
+        const match=item.title.toLowerCase().match(/\b(iv|iii|ii|i)\s+квартал[а-я]*\s+(\d{4})/);
+        if (!match || `${match[2]}-Q${['i','ii','iii','iv'].indexOf(match[1])+1}`!==job.gdp_period) throw new Error('Wrong GDP period');
+      }
       if (job.report_end) {
         if (reportEnd(item.title)!==job.report_end) throw new Error('Wrong reporting period');
       } else if (job.mode==='scheduled' && (!Number.isFinite(item.stamp) || item.stamp*1000<Date.parse(job.not_before))) throw new Error('Stale release');
@@ -252,6 +295,9 @@ export class Coordinator {
         const result=await this.effects.send(bytes,item,job.mode);
         job.phase='completed'; job.messageId=result.message_id; job.deliveredAt=this.effects.now();
         job.fileName=result.document?.file_name||null;
+        job.publicationStamp=Number.isFinite(item.stamp)?item.stamp:null;
+        job.receivedStamp=Number.isFinite(item.receivedStamp)?item.receivedStamp:null;
+        job.caption=result.caption||null;
         job.sourceUrl=item.url;
         if (job.targetId && !state.completed.includes(job.targetId)) state.completed.push(job.targetId);
         await this.save(state);
@@ -274,6 +320,10 @@ export class Coordinator {
 
   async summary() {
     const state=await this.state();
-    return {completed:state.completed.length,destination:await this.destination(),jobs:Object.values(state.jobs).map(j=>({id:j.id,kind:j.kind,mode:j.mode,phase:j.phase,createdAt:j.createdAt,deliveredAt:j.deliveredAt||null,fileName:j.fileName||null}))};
+    return {completed:state.completed.length,destination:await this.destination(),jobs:Object.values(state.jobs).map(j=>({id:j.id,kind:j.kind,mode:j.mode,phase:j.phase,createdAt:j.createdAt,deliveredAt:j.deliveredAt||null,fileName:j.fileName||null,publicationStamp:j.publicationStamp??null,receivedStamp:j.receivedStamp??null,caption:j.caption||null}))};
   }
 }
+import reportDefinitions from './reports.json' with {type:'json'};
+export const REPORTS=reportDefinitions;
+const REPORT_KINDS=new Set(REPORTS.map(item=>item.kind));
+

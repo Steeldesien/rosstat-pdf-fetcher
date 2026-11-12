@@ -1,5 +1,5 @@
 import {DurableObject} from 'cloudflare:workers';
-import {Coordinator, commandMode, connectionTarget, documentName} from './coordinator.mjs';
+import {Coordinator, commandMode, connectionTarget, documentName, deliveryCaption, REPORTS} from './coordinator.mjs';
 
 async function github(env, path, options={}) {
   if (!env.GITHUB_TOKEN) throw new Error('Dispatch credential is not configured');
@@ -33,7 +33,7 @@ export class CoordinatorObject extends DurableObject {
         const form=new FormData();
         form.append('chat_id',destination.chatId);
         if (destination.threadId) form.append('message_thread_id',String(destination.threadId));
-        form.append('caption',`${item.title}\n${item.url}\n${mode==='latest'?'Ручная загрузка /latest':'Автоматическая доставка'}`.slice(0,1024));
+        form.append('caption',deliveryCaption(item,mode));
         form.append('document',new Blob([bytes],{type:'application/pdf'}),documentName(item.title));
         return telegram(env,'sendDocument',{body:form});
       }
@@ -71,7 +71,7 @@ export default {
             try {
               await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
                 chat_id:connected.target.chatId,...(connected.target.threadId?{message_thread_id:connected.target.threadId}:{}),
-                text:'Этот чат подключён. Автоматические PDF будут приходить сюда. Для ручной загрузки: /latest'+(env.BOT_USERNAME?'@'+env.BOT_USERNAME:'')
+                text:'Этот чат подключён. Автоматические PDF будут приходить сюда. Для ручной загрузки выберите тип отчёта в меню команд бота.'
               })});
             } catch {
               await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:env.TELEGRAM_CHAT_ID,
@@ -81,11 +81,13 @@ export default {
           return new Response('OK');
         }
         const destination=await object.invoke('destination');
-        if (!commandMode(update,env.TELEGRAM_CHAT_ID,destination,env.BOT_USERNAME)) return new Response('OK');
-        const job=await object.invoke('manual',[update.update_id]);
+        const selected=commandMode(update,env.TELEGRAM_CHAT_ID,destination,env.BOT_USERNAME);
+        if (!selected) return new Response('OK');
+        const kind=selected==='latest'?'inflation':selected;
+        const job=await object.invoke('manual',[update.update_id,kind]);
         if (job.created) {
           try { await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:update.message.chat.id,
-            ...(update.message.message_thread_id?{message_thread_id:update.message.message_thread_id}:{}),text:'Загрузка PDF запущена. Файл поступит в подключённый чат после проверки Росстата.'})}); }
+            ...(update.message.message_thread_id?{message_thread_id:update.message.message_thread_id}:{}),text:'Проверяю последний выпуск: '+REPORTS.find(r=>r.kind===kind).label+'. Файл поступит в подключённый чат.'})}); }
           catch {console.log('Command acknowledgement unavailable');}
         }
         await object.invoke('tick');
@@ -102,7 +104,7 @@ export default {
         if (path==='/admin/manual') {
           const data=await request.json();
           if (!validId(data.request_id)) return new Response('Invalid request',{status:400});
-          return reply(await object.invoke('manual',[data.request_id]));
+          return reply(await object.invoke('manual',[data.request_id,data.kind||'inflation']));
         }
         if (path==='/admin/tick') return reply(await object.invoke('tick'));
       }
@@ -118,7 +120,9 @@ export default {
         if (form && data.document instanceof File) {
           const bytes=new Uint8Array(await data.document.arrayBuffer());
           return reply(await object.invoke('deliver',[data.job_id,data.run_id,bytes,
-            {title:String(data.title||'Росстат'),url:String(data.source_url||''),stamp:Number(data.publication_stamp)}]));
+            {title:String(data.title||'Росстат'),url:String(data.source_url||''),stamp:data.publication_stamp?Number(data.publication_stamp):NaN,
+              catalogueDate:String(data.catalogue_date||''),
+              receivedStamp:Number.isFinite(Number(data.received_stamp))?Number(data.received_stamp):Date.now()/1000}]));
         }
       }
       return new Response('Not found',{status:404});

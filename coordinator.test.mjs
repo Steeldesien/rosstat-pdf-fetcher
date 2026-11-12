@@ -223,3 +223,51 @@ test('group connection can target a forum topic and can be reverted by its owner
   await f.coordinator.connect({update_id:21,message:{from:{id:7},chat:{id:7,type:'private'},text:'/connect'}},'7');
   assert.equal((await f.coordinator.destination()).chatId,'7');
 });
+
+test('document caption distinguishes publication time from completed download time in Yekaterinburg', () => {
+  const caption=api.deliveryCaption({title:'Выпуск инфляции',url:'https://rosstat.gov.ru/a',
+    stamp:Date.parse('2026-11-11T16:00:00Z')/1000,receivedStamp:Date.parse('2026-11-12T12:34:56Z')/1000},'latest');
+  assert.ok(caption.includes('Опубликовано Росстатом: 11.11.2026 21:00:00'));
+  assert.ok(caption.includes('Получено ботом: 12.11.2026 17:34:56'));
+  assert.ok(caption.includes('Екатеринбург (UTC+5)'));
+});
+
+test('long source captions preserve both time labels within the Telegram length limit', () => {
+  const caption=api.deliveryCaption({title:'x'.repeat(2000),url:'https://rosstat.gov.ru/a',stamp:1,receivedStamp:2},'scheduled');
+  assert.ok(caption.length<=1024);
+  assert.ok(caption.includes('Опубликовано Росстатом:'));
+  assert.ok(caption.includes('Получено ботом:'));
+});
+
+test('delivery history records the timestamps and the caption confirmed by Telegram', async () => {
+  const f=fixture();const job=await f.coordinator.manual(30);await f.coordinator.claim(job.id,'owner');
+  f.coordinator.effects.send=async()=>({message_id:90,caption:'Confirmed caption'});
+  await f.coordinator.deliver(job.id,'owner',new TextEncoder().encode('%PDF-test'),{
+    title:'t',url:'https://rosstat.gov.ru/a',stamp:100,receivedStamp:200});
+  const stored=(await f.coordinator.summary()).jobs[0];
+  assert.equal(stored.publicationStamp,100);assert.equal(stored.receivedStamp,200);assert.equal(stored.caption,'Confirmed caption');
+});
+
+test('menu report commands select distinct kinds without adding automatic schedules', async () => {
+  for(const kind of ['inflation','cpi','gdp','fuel','gasoline','industry','ppi','finance','business','wages']) {
+    const update={update_id:40,message:{chat:{id:7,type:'private'},text:'/'+kind}};
+    assert.equal(api.commandMode(update,'7'),kind);
+    const f=fixture();const created=await f.coordinator.manual(40,kind);
+    assert.equal((await f.coordinator.claim(created.id,'owner')).job.kind,kind);
+    assert.equal(f.coordinator.config.targets.length,1);
+  }
+});
+
+test('monthly and cumulative report names include their date ranges', () => {
+  assert.equal(api.documentName('Об индексе потребительских цен в сентябре 2026 года'),'ИПЦ_01.09.2026-30.09.2026.pdf');
+  assert.equal(api.documentName('О промышленном производстве в январе-сентябре 2026 года'),'Промышленность_01.01.2026-30.09.2026.pdf');
+  assert.equal(api.documentName('О финансовых результатах деятельности организаций в январе-августе 2026 года'),'Финрезультаты_01.01.2026-31.08.2026.pdf');
+  assert.equal(api.documentName('О просроченной задолженности по заработной плате на конец сентября 2026 года'),'Долги_по_зарплате_на_30.09.2026.pdf');
+  assert.equal(api.documentName('О финансовых результатах деятельности организаций в 2026 году'),'Финрезультаты_01.01.2026-31.12.2026.pdf');
+});
+
+test('catalogue dates do not invent an exact publication time', () => {
+  const caption=api.deliveryCaption({title:'GDP',url:'https://rosstat.gov.ru/a',stamp:null,catalogueDate:'2026-10-02',receivedStamp:1},'latest');
+  assert.ok(caption.includes('Дата файла в каталоге: 02.10.2026'));
+  assert.ok(caption.includes('Опубликовано Росстатом: время не указано'));
+});

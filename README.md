@@ -1,6 +1,6 @@
 # Rosstat PDF downloader
 
-Downloads public Rosstat weekly inflation releases and passes the original PDF to a private Cloudflare delivery coordinator.
+Downloads public Rosstat reports and passes the original PDF to a private Cloudflare delivery coordinator. The menu includes only report types verified to have downloadable PDF releases.
 
 The standard GitHub-hosted Linux runner contains no Telegram token or chat ID. No state branches, PDF artifacts, uploaded logs, or persistent caches are created. Runner logs contain only generic status. The public workflow input is an opaque random job identifier.
 
@@ -21,3 +21,11 @@ A new inflation target starts only on its configured Wednesday. After successful
 To switch delivery to a group, the owner sends `/connect@YourBotUsername` in that group. The owner is identified by the original private Telegram ID configured in the coordinator, not by a group title or a forwarded message. Only the owner can change the destination. `/latest` is accepted in the connected group and in the owner's private chat; PDFs go to the connected destination. Sending `/connect` in the owner's private chat restores private delivery. A forum topic is remembered when the connection command is sent in that topic. The destination ID stays in private Cloudflare storage and is never included in runner claims or public workflow inputs. Bots need permission to send messages and documents in the chosen group.
 
 Run local checks with `python -m unittest discover -v` and `node --test coordinator.test.mjs`.
+
+## Manual report menu
+
+`/inflation` weekly inflation, `/cpi` monthly CPI, `/gdp` GDP, `/fuel` weekly oil-product prices, `/gasoline` monthly gasoline prices, `/industry` industrial production, `/ppi` producer prices, `/finance` company financial results, `/business` business activity, `/wages` wage arrears. The old `/latest` remains an alias for weekly inflation and is omitted from the menu.
+
+Each command checks the official RSS and the PDF catalogue and downloads the newest available reporting period again. No previously received PDF is sent as a substitute for that check. Additional menu types do not add automatic monitoring targets. The social-economic report catalogue is not presented as a directly downloadable PDF.
+
+PDF captions show the official news publication timestamp and the completed-download timestamp, to seconds in Asia/Yekaterinburg (UTC+5). For archive-only files without a news timestamp, publication time is explicitly unavailable; the catalogue's file date is shown separately and is not presented as an exact publication time.

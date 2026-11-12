@@ -1,6 +1,9 @@
 """Public Rosstat downloader. Telegram credentials and delivery state stay in the broker."""
 from datetime import datetime, date
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
+import calendar
+import json
 import os
 from pathlib import Path
 import re
@@ -12,6 +15,12 @@ import requests
 RSS = 'https://rosstat.gov.ru/central-news/rss'
 MAX_BYTES = 25 * 1024 * 1024
 ROOT = Path(__file__).resolve().parent
+CATALOGUE = 'https://rosstat.gov.ru/compendium/document/50798'
+REPORTS = {item['kind']: item for item in json.loads((ROOT/'reports.json').read_text(encoding='utf-8'))}
+MONTHS = [('января','январе','январь'),('февраля','феврале','февраль'),('марта','марте','март'),
+          ('апреля','апреле','апрель'),('мая','мае','май'),('июня','июне','июнь'),('июля','июле','июль'),
+          ('августа','августе','август'),('сентября','сентябре','сентябрь'),('октября','октябре','октябрь'),
+          ('ноября','ноябре','ноябрь'),('декабря','декабре','декабрь')]
 
 
 class RetryLater(RuntimeError):
@@ -32,11 +41,67 @@ def validate_source(url):
 
 def matches(title, kind):
     text = ' '.join(title.lower().split())
-    if kind == 'inflation':
-        return text.startswith('об оценке индекса потребительских цен')
-    if kind == 'gdp':
-        return ('ввп' in text or 'валового внутреннего продукта' in text) and 'iii квартал' in text and '2026' in text
-    raise ValueError('Unsupported publication kind')
+    if kind not in REPORTS:raise ValueError('Unsupported publication kind')
+    return any(text.startswith(prefix) for prefix in REPORTS[kind]['prefixes'])
+
+
+def quarter_period(title):
+    match=re.search(r'\b(iv|iii|ii|i)\s+квартал[а-я]*\s+(\d{4})',title.lower())
+    return f"{match[2]}-Q{['i','ii','iii','iv'].index(match[1])+1}" if match else None
+
+
+def entry_key(item):
+    title=item['title'].lower(); years=re.findall(r'\b20\d{2}\b',title)
+    year=max(map(int,years)) if years else 0
+    end=report_end(title)
+    if end:period=int(end.replace('-',''))
+    else:
+        quarter=quarter_period(title)
+        if quarter:month=int(quarter[-1])*3
+        else:
+            found=[(m.start(),i+1) for i,forms in enumerate(MONTHS) for form in forms for m in re.finditer(r'\b'+form+r'\b',title)]
+            month=max(found)[1] if found else 0
+            if not month and re.search(r'(?:\bв|\bза)\s+20\d{2}\s+год',title):month=12
+        period=year*10000+month*100+(calendar.monthrange(year,month)[1] if year and month else 0)
+    # For the same period prefer the official news publication timestamp over a catalogue modification date.
+    return period,bool(item.get('stamp')),item.get('stamp') or item.get('sort_stamp') or 0
+
+
+class CatalogueParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True);self.depth=0;self.record=None;self.root=None;self.field=None;self.field_depth=None;self.items=[]
+    def handle_starttag(self,tag,attrs):
+        attrs=dict(attrs)
+        if tag=='div':
+            self.depth+=1;classes=attrs.get('class','').split()
+            if 'document-list__item' in classes and 'document-list__item--list-tree' not in classes:
+                self.record={'title':[],'info':[],'pdfs':[]};self.root=self.depth
+            if self.record is not None:
+                for field in ['title','info']:
+                    if 'document-list__item-'+field in classes:self.field=field;self.field_depth=self.depth
+        if tag=='a' and self.record is not None and urlparse(attrs.get('href','')).path.lower().endswith('.pdf'):
+            self.record['pdfs'].append(urljoin(CATALOGUE,attrs['href']))
+    def handle_data(self,data):
+        if self.record is not None and self.field:self.record[self.field].append(data)
+    def handle_endtag(self,tag):
+        if tag!='div':return
+        if self.depth==self.field_depth:self.field=None;self.field_depth=None
+        if self.record is not None and self.depth==self.root:
+            title=' '.join(''.join(self.record['title']).split());info=' '.join(self.record['info'])
+            if title and self.record['pdfs']:
+                try:
+                    url=validate_source(self.record['pdfs'][0]);match=re.search(r'\b(\d{2})\.(\d{2})\.(\d{4})\b',info)
+                    publication_date=date(int(match[3]),int(match[2]),int(match[1])).isoformat() if match else None
+                    self.items.append({'title':title,'url':url,'stamp':None,'catalogue_date':publication_date,
+                                       'sort_stamp':datetime.fromisoformat(publication_date+'T00:00:00+03:00').timestamp() if publication_date else 0})
+                except (ValueError,TypeError):pass
+            self.record=None;self.root=None
+        self.depth-=1
+
+
+def catalogue_entries(html,kind):
+    parser=CatalogueParser();parser.feed(html.decode('utf-8') if isinstance(html,bytes) else html)
+    return [item for item in parser.items if matches(item['title'],kind)]
 
 
 def report_end(title):
@@ -67,7 +132,12 @@ def entries(xml, kind):
 
 def check_job(job, fetch, deliver):
     found = entries(fetch(RSS), job['kind'])
-    if job['mode'] != 'latest':
+    if job['mode'] == 'latest':
+        # The catalogue complements the short RSS feed. Prefer the newest actual reporting period.
+        found += catalogue_entries(fetch(CATALOGUE),job['kind'])
+    else:
+        if job.get('gdp_period'):
+            found=[item for item in found if quarter_period(item['title'])==job['gdp_period']]
         if job.get('report_end'):
             found = [item for item in found if item['report_end'] == job['report_end']]
         else:
@@ -75,10 +145,11 @@ def check_job(job, fetch, deliver):
             found = [item for item in found if item['stamp'] >= cutoff]
     if not found:
         return 'waiting'
-    item = found[-1]
+    item = max(found,key=entry_key)
     data = fetch(item['url'])
     if not data.startswith(b'%PDF-') or len(data) > MAX_BYTES:
         raise ValueError('Source response is not an acceptable PDF')
+    item['received_stamp'] = time.time()
     deliver(job, data, item)
     return 'delivered'
 
@@ -133,7 +204,9 @@ class Broker:
     def deliver(self, job, data, item):
         result = self.call('deliver', data={'job_id': job['id'], 'run_id': self.run_id,
                                           'title': item['title'], 'source_url': item['url'],
-                                          'publication_stamp': str(item['stamp'])},
+                                          'publication_stamp': str(item.get('stamp','')),
+                                          'catalogue_date': item.get('catalogue_date') or '',
+                                          'received_stamp': str(item['received_stamp'])},
                            files={'document': ('Rosstat.pdf', data, 'application/pdf')})
         if result.get('status') != 'completed':
             raise RuntimeError('Delivery has not been confirmed')
