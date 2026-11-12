@@ -1,0 +1,10 @@
+__pycache__/
+.wrangler/
+node_modules/
+*.local.json
+*.local.jsonc
+*.private.json
+runtime/
+*.pdf
+.env
+.clasprc.json

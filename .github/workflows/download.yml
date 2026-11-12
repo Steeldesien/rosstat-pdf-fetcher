@@ -1,0 +1,36 @@
+name: Download public Rosstat PDF
+run-name: 'Rosstat PDF job ${{ inputs.job_id }}'
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Opaque delivery job identifier
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: rosstat-job-${{ inputs.job_id }}
+  cancel-in-progress: false
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 310
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Downloader tests
+        run: python -m unittest discover -v
+      - name: Coordinator tests
+        run: node --test coordinator.test.mjs
+      - name: Download and relay PDF
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          BROKER_URL: ${{ secrets.BROKER_URL }}
+          BROKER_TOKEN: ${{ secrets.BROKER_TOKEN }}
+        run: python -u runner.py

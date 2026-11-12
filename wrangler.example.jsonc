@@ -1,0 +1,10 @@
+{
+  "name": "rosstat-private-coordinator",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-12",
+  "workers_dev": true,
+  "vars": {"GITHUB_REPOSITORY": "OWNER/PUBLIC_REPO", "SCHEDULE_JSON": "{\"targets\":[],\"recurring\":true}"},
+  "durable_objects": {"bindings": [{"name": "COORDINATOR", "class_name": "CoordinatorObject"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["CoordinatorObject"]}],
+  "triggers": {"crons": ["* * * * *"]}
+}
