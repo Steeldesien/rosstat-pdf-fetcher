@@ -4,14 +4,14 @@ let api;
 try { api = await import('./coordinator.mjs'); }
 catch { assert.fail('The private coordinator has not been implemented yet'); }
 
-function fixture() {
+function fixture(nowIso='2026-11-18T17:00:00Z') {
   const data = new Map();
   const store = {
     async get(key) { return structuredClone(data.get(key)); },
     async put(key, value) { data.set(key, structuredClone(value)); },
     async list({prefix}) { return new Map([...data].filter(([key]) => key.startsWith(prefix)).map(([k,v]) => [k,structuredClone(v)])); }
   };
-  let now = Date.parse('2026-11-18T17:00:00Z');
+  let now = Date.parse(nowIso);
   const sent = [], dispatched = [];
   const config = {targets: [{id:'weekly-18',kind:'inflation',start:'2026-11-18T21:00:00+05:00'}], recurring: false};
   const coordinator = new api.Coordinator(store, config, {
@@ -159,6 +159,32 @@ test('PDF filenames contain the complete reporting range', () => {
   assert.equal(api.documentName('Об оценке индекса потребительских цен с 29 декабря по 11 января 2027 года'), 'Инфляция_29.12.2026–11.01.2027.pdf');
   assert.equal(api.documentName('Неизвестный период'), 'Rosstat.pdf');
   assert.equal(api.documentName('Об оценке индекса потребительских цен с 31 февраля по 9 марта 2026 года'), 'Rosstat.pdf');
+});
+
+test('the GDP test PDF is named with the quarter date range', () => {
+  assert.equal(api.documentName('Справка о предварительной оценке динамики ВВП в III квартале 2026 года'), 'ВВП_01.07.2026–30.09.2026.pdf');
+});
+
+test('the November 13 GDP test starts at 21:00 Yekaterinburg and waits for the fresh release', async () => {
+  const f=fixture('2026-11-13T15:59:00Z');
+  f.coordinator.config.targets=[{id:'gdp:2026-Q3',kind:'gdp',start:'2026-11-13T21:00:00+05:00'}];
+  await f.coordinator.tick(); assert.equal(f.dispatched.length,0);
+  f.advance(60000); await f.coordinator.tick(); assert.equal(f.dispatched.length,1);
+  const claim=await f.coordinator.claim(f.dispatched[0],'owner');
+  assert.equal(claim.job.kind,'gdp');
+  assert.equal(claim.job.not_before,'2026-11-13T00:00:00+05:00');
+});
+
+test('a completed inflation release causes no daily runs before the following Wednesday window', async () => {
+  const f=fixture();f.coordinator.config.recurring=true;
+  await f.coordinator.tick();const id=f.dispatched[0];await f.coordinator.claim(id,'owner');
+  await f.coordinator.deliver(id,'owner',new TextEncoder().encode('%PDF-test'),{
+    title:'Об оценке индекса потребительских цен с 10 по 16 ноября 2026 года',url:'https://rosstat.gov.ru/a',stamp:Date.parse('2026-11-18T17:00:00Z')/1000
+  });
+  const count=f.dispatched.length;
+  for(let day=0;day<6;day++){f.advance(86400000);await f.coordinator.tick();assert.equal(f.dispatched.length,count);}
+  f.advance(23*3600000-60000);await f.coordinator.tick();assert.equal(f.dispatched.length,count);
+  f.advance(60000);await f.coordinator.tick();assert.equal(f.dispatched.length,count+1);
 });
 
 test('private delivery history retains the filename confirmed by Telegram', async () => {

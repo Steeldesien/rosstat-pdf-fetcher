@@ -14,6 +14,8 @@ Explicit publication-calendar dates take precedence. After the configured calend
 
 Standard GitHub Actions runners in public repositories are free of monthly execution-minute billing; platform limits and launch delays still apply. Cloudflare Free retains daily quotas. No paid plan is required.
 
-Inflation PDFs are named with the complete reporting range, for example `Инфляция_03.11.2026–09.11.2026.pdf`. The range is taken from the release title, including month and year transitions.
+Inflation PDFs are named with the complete reporting range, for example `Инфляция_03.11.2026–09.11.2026.pdf`. The range is taken from the release title, including month and year transitions. GDP quarter releases use the quarter's date range, for example `ВВП_01.07.2026–30.09.2026.pdf`.
+
+A new inflation target starts only on its configured Wednesday. After successful delivery, no daily inflation checks or automatic resends occur before the next Wednesday target. Checks on later days apply only to an outstanding delayed release. Explicit one-off tests such as GDP have their own independent calendar date.
 
 Run local checks with `python -m unittest discover -v` and `node --test coordinator.test.mjs`.
