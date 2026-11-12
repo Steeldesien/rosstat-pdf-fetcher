@@ -193,3 +193,33 @@ test('private delivery history retains the filename confirmed by Telegram', asyn
   await f.coordinator.deliver(job.id,'owner',new TextEncoder().encode('%PDF-test'),{title:'t',url:'https://rosstat.gov.ru/a',stamp:1});
   assert.equal((await f.coordinator.summary()).jobs[0].fileName,'Инфляция_03.11.2026-09.11.2026.pdf');
 });
+
+test('only the owner can connect a group and group IDs never enter runner claims', async () => {
+  const f=fixture();
+  const message=from=>({update_id:10,message:{from:{id:from},chat:{id:-1007654321,type:'supergroup'},text:'/connect@TestBot'}});
+  await assert.rejects(f.coordinator.connect(message(8),'7','TestBot'));
+  assert.equal(await f.coordinator.destination(),null);
+  const connected=await f.coordinator.connect(message(7),'7','TestBot');
+  assert.equal(connected.target.chatId,'-1007654321');
+  assert.equal((await f.coordinator.destination()).chatId,'-1007654321');
+  assert.equal((await f.coordinator.connect(message(7),'7','TestBot')).replay,true);
+  const job=await f.coordinator.manual(11);const claim=await f.coordinator.claim(job.id,'runner');
+  assert.ok(!JSON.stringify(claim).includes('-1007654321'));
+});
+
+test('latest is allowed in the connected group but not an unrelated group', () => {
+  const destination={chatId:'-1007654321'};
+  const update=id=>({update_id:12,message:{from:{id:8},chat:{id,type:'supergroup'},text:'/latest@TestBot'}});
+  assert.equal(api.commandMode(update(-1007654321),'7',destination,'TestBot'),'latest');
+  assert.equal(api.commandMode(update(-1009876543),'7',destination,'TestBot'),null);
+  const wrong=update(-1007654321);wrong.message.text='/latest@OtherBot';
+  assert.equal(api.commandMode(wrong,'7',destination,'TestBot'),null);
+});
+
+test('group connection can target a forum topic and can be reverted by its owner', async () => {
+  const f=fixture();
+  await f.coordinator.connect({update_id:20,message:{from:{id:7},chat:{id:-1007654321,type:'supergroup'},text:'/connect',message_thread_id:42}},'7');
+  assert.equal((await f.coordinator.destination()).threadId,42);
+  await f.coordinator.connect({update_id:21,message:{from:{id:7},chat:{id:7,type:'private'},text:'/connect'}},'7');
+  assert.equal((await f.coordinator.destination()).chatId,'7');
+});

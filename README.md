@@ -18,4 +18,6 @@ Inflation PDFs are named with the complete reporting range, for example `Инф�
 
 A new inflation target starts only on its configured Wednesday. After successful delivery, no daily inflation checks or automatic resends occur before the next Wednesday target. Checks on later days apply only to an outstanding delayed release. Explicit one-off tests such as GDP have their own independent calendar date.
 
+To switch delivery to a group, the owner sends `/connect@YourBotUsername` in that group. The owner is identified by the original private Telegram ID configured in the coordinator, not by a group title or a forwarded message. Only the owner can change the destination. `/latest` is accepted in the connected group and in the owner's private chat; PDFs go to the connected destination. Sending `/connect` in the owner's private chat restores private delivery. A forum topic is remembered when the connection command is sent in that topic. The destination ID stays in private Cloudflare storage and is never included in runner claims or public workflow inputs. Bots need permission to send messages and documents in the chosen group.
+
 Run local checks with `python -m unittest discover -v` and `node --test coordinator.test.mjs`.

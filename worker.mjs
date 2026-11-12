@@ -1,5 +1,5 @@
 import {DurableObject} from 'cloudflare:workers';
-import {Coordinator, commandMode, documentName} from './coordinator.mjs';
+import {Coordinator, commandMode, connectionTarget, documentName} from './coordinator.mjs';
 
 async function github(env, path, options={}) {
   if (!env.GITHUB_TOKEN) throw new Error('Dispatch credential is not configured');
@@ -29,8 +29,10 @@ export class CoordinatorObject extends DurableObject {
         method:'POST',body:JSON.stringify({ref:'main',inputs:{job_id:id}})
       }),
       send:async(bytes,item,mode)=>{
+        const destination=await ctx.storage.get('destination')||{chatId:env.TELEGRAM_CHAT_ID};
         const form=new FormData();
-        form.append('chat_id',env.TELEGRAM_CHAT_ID);
+        form.append('chat_id',destination.chatId);
+        if (destination.threadId) form.append('message_thread_id',String(destination.threadId));
         form.append('caption',`${item.title}\n${item.url}\n${mode==='latest'?'Ручная загрузка /latest':'Автоматическая доставка'}`.slice(0,1024));
         form.append('document',new Blob([bytes],{type:'application/pdf'}),documentName(item.title));
         return telegram(env,'sendDocument',{body:form});
@@ -38,7 +40,7 @@ export class CoordinatorObject extends DurableObject {
     });
   }
   async invoke(method,args=[]) {
-    if (!['manual','tick','claim','deliver','backoff','waiting','release','summary','importCompleted'].includes(method)) throw new Error('Unknown operation');
+    if (!['manual','tick','claim','deliver','backoff','waiting','release','summary','importCompleted','connect','destination'].includes(method)) throw new Error('Unknown operation');
     return this.coordinator[method](...args);
   }
 }
@@ -62,10 +64,28 @@ export default {
     try {
       if (path==='/telegram') {
         const update=await request.json();
-        if (!commandMode(update,env.TELEGRAM_CHAT_ID) || update.update_id<Number(env.MIN_UPDATE_ID||0)) return new Response('OK');
+        if (update.update_id<Number(env.MIN_UPDATE_ID||0)) return new Response('OK');
+        if (connectionTarget(update,env.TELEGRAM_CHAT_ID,env.BOT_USERNAME)) {
+          const connected=await object.invoke('connect',[update,env.TELEGRAM_CHAT_ID,env.BOT_USERNAME||'']);
+          if (!connected.replay) {
+            try {
+              await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
+                chat_id:connected.target.chatId,...(connected.target.threadId?{message_thread_id:connected.target.threadId}:{}),
+                text:'Этот чат подключён. Автоматические PDF будут приходить сюда. Для ручной загрузки: /latest'+(env.BOT_USERNAME?'@'+env.BOT_USERNAME:'')
+              })});
+            } catch {
+              await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:env.TELEGRAM_CHAT_ID,
+                text:'Чат выбран, но бот не смог отправить туда подтверждение. Разрешите ему отправлять сообщения и документы, затем повторите /connect в группе.'})});
+            }
+          }
+          return new Response('OK');
+        }
+        const destination=await object.invoke('destination');
+        if (!commandMode(update,env.TELEGRAM_CHAT_ID,destination,env.BOT_USERNAME)) return new Response('OK');
         const job=await object.invoke('manual',[update.update_id]);
         if (job.created) {
-          try { await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:env.TELEGRAM_CHAT_ID,text:'Загрузка PDF запущена. Пришлю файл после проверки Росстата.'})}); }
+          try { await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:update.message.chat.id,
+            ...(update.message.message_thread_id?{message_thread_id:update.message.message_thread_id}:{}),text:'Загрузка PDF запущена. Файл поступит в подключённый чат после проверки Росстата.'})}); }
           catch {console.log('Command acknowledgement unavailable');}
         }
         await object.invoke('tick');

@@ -1,8 +1,23 @@
-export function commandMode(update, owner) {
+function commandName(update,botUsername='') {
+  const raw=(update.message?.text||'').trim().split(/\s+/)[0].toLowerCase();
+  const [command,mention]=raw.split('@');
+  return mention && botUsername && mention!==botUsername.toLowerCase() ? null : command;
+}
+
+export function connectionTarget(update,owner,botUsername='') {
+  const message=update.message||{},chat=message.chat||{};
+  if (!Number.isSafeInteger(update.update_id) || commandName(update,botUsername)!=='/connect' || String(message.from?.id)!==String(owner)) return null;
+  if (!['group','supergroup','private'].includes(chat.type) || !Number.isSafeInteger(chat.id)) return null;
+  if (chat.type==='private' && String(chat.id)!==String(owner)) return null;
+  return {chatId:String(chat.id),type:chat.type,
+    ...(Number.isSafeInteger(message.message_thread_id)&&message.message_thread_id>0?{threadId:message.message_thread_id}:{})};
+}
+
+export function commandMode(update, owner, destination=null, botUsername='') {
   const message = update.message || {}, chat = message.chat || {};
-  const command = (message.text || '').trim().split(/\s+/)[0].split('@')[0].toLowerCase();
-  return Number.isSafeInteger(update.update_id) && String(chat.id) === String(owner) &&
-    chat.type === 'private' && command === '/latest' ? 'latest' : null;
+  const authorized=chat.type==='private' && String(chat.id)===String(owner) ||
+    ['group','supergroup'].includes(chat.type) && String(chat.id)===destination?.chatId;
+  return Number.isSafeInteger(update.update_id) && authorized && commandName(update,botUsername)==='/latest' ? 'latest' : null;
 }
 
 function sourceAllowed(url) {
@@ -92,6 +107,22 @@ export class Coordinator {
 
   async state() {
     return await this.store.get('coordinator') || {jobs: {}, requests: {}, completed: []};
+  }
+
+  async destination() {
+    return await this.store.get('destination')||null;
+  }
+
+  async connect(update,owner,botUsername='') {
+    const target=connectionTarget(update,owner,botUsername);
+    if (!target) throw new Error('Only the owner can connect a chat');
+    return this.serial(async()=>{
+      const previous=await this.destination();
+      if (previous?.updateId===update.update_id) return {target:previous,replay:true};
+      const saved={...target,updateId:update.update_id};
+      await this.store.put('destination',saved);
+      return {target:saved,replay:false};
+    });
   }
 
   cadence(now) {
@@ -243,6 +274,6 @@ export class Coordinator {
 
   async summary() {
     const state=await this.state();
-    return {completed:state.completed.length,jobs:Object.values(state.jobs).map(j=>({id:j.id,kind:j.kind,mode:j.mode,phase:j.phase,createdAt:j.createdAt,deliveredAt:j.deliveredAt||null,fileName:j.fileName||null}))};
+    return {completed:state.completed.length,destination:await this.destination(),jobs:Object.values(state.jobs).map(j=>({id:j.id,kind:j.kind,mode:j.mode,phase:j.phase,createdAt:j.createdAt,deliveredAt:j.deliveredAt||null,fileName:j.fileName||null}))};
   }
 }
