@@ -35,7 +35,7 @@ export function documentName(title) {
       const firstMonth=['i','ii','iii','iv'].indexOf(quarter[1])*3;
       const first=new Date(Date.UTC(Number(quarter[2]),firstMonth,1)).toISOString().slice(0,10);
       const last=new Date(Date.UTC(Number(quarter[2]),firstMonth+3,0)).toISOString().slice(0,10);
-      return `ВВП_${format(first)}–${format(last)}.pdf`;
+      return `ВВП_${format(first)}-${format(last)}.pdf`;
     }
     const end=reportEnd(text);
     const start=text.match(new RegExp('(?:^| )с\\s+(\\d{1,2})(?:\\s+('+months.join('|')+'))?(?:\\s+(\\d{4})(?:\\s+года?)?)?\\s+по\\s'));
@@ -46,7 +46,7 @@ export function documentName(title) {
     const date=new Date(first+'T00:00:00Z');
     if (!Number.isFinite(+date) || date.toISOString().slice(0,10)!==first || first>end) return 'Rosstat.pdf';
     const prefix=text.startsWith('об оценке индекса потребительских цен')?'Инфляция':'Росстат';
-    return `${prefix}_${format(first)}–${format(end)}.pdf`;
+    return `${prefix}_${format(first)}-${format(end)}.pdf`;
   } catch {return 'Rosstat.pdf';}
 }
 

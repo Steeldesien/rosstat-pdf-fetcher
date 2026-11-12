@@ -153,16 +153,16 @@ test('an older delayed report cannot close the following reporting week', async 
 });
 
 test('PDF filenames contain the complete reporting range', () => {
-  assert.equal(api.documentName('Об оценке индекса потребительских цен с 3 по 9 ноября 2026 года'), 'Инфляция_03.11.2026–09.11.2026.pdf');
-  assert.equal(api.documentName('Об оценке индекса потребительских цен с 27 октября по 2 ноября 2026 года'), 'Инфляция_27.10.2026–02.11.2026.pdf');
-  assert.equal(api.documentName('Об оценке индекса потребительских цен с 29 декабря 2026 года по 11 января 2027 года'), 'Инфляция_29.12.2026–11.01.2027.pdf');
-  assert.equal(api.documentName('Об оценке индекса потребительских цен с 29 декабря по 11 января 2027 года'), 'Инфляция_29.12.2026–11.01.2027.pdf');
+  assert.equal(api.documentName('Об оценке индекса потребительских цен с 3 по 9 ноября 2026 года'), 'Инфляция_03.11.2026-09.11.2026.pdf');
+  assert.equal(api.documentName('Об оценке индекса потребительских цен с 27 октября по 2 ноября 2026 года'), 'Инфляция_27.10.2026-02.11.2026.pdf');
+  assert.equal(api.documentName('Об оценке индекса потребительских цен с 29 декабря 2026 года по 11 января 2027 года'), 'Инфляция_29.12.2026-11.01.2027.pdf');
+  assert.equal(api.documentName('Об оценке индекса потребительских цен с 29 декабря по 11 января 2027 года'), 'Инфляция_29.12.2026-11.01.2027.pdf');
   assert.equal(api.documentName('Неизвестный период'), 'Rosstat.pdf');
   assert.equal(api.documentName('Об оценке индекса потребительских цен с 31 февраля по 9 марта 2026 года'), 'Rosstat.pdf');
 });
 
 test('the GDP test PDF is named with the quarter date range', () => {
-  assert.equal(api.documentName('Справка о предварительной оценке динамики ВВП в III квартале 2026 года'), 'ВВП_01.07.2026–30.09.2026.pdf');
+  assert.equal(api.documentName('Справка о предварительной оценке динамики ВВП в III квартале 2026 года'), 'ВВП_01.07.2026-30.09.2026.pdf');
 });
 
 test('the November 13 GDP test starts at 21:00 Yekaterinburg and waits for the fresh release', async () => {
@@ -189,7 +189,7 @@ test('a completed inflation release causes no daily runs before the following We
 
 test('private delivery history retains the filename confirmed by Telegram', async () => {
   const f=fixture();const job=await f.coordinator.manual(8);await f.coordinator.claim(job.id,'owner');
-  f.coordinator.effects.send=async()=>({message_id:56,document:{file_name:'Инфляция_03.11.2026–09.11.2026.pdf'}});
+  f.coordinator.effects.send=async()=>({message_id:56,document:{file_name:'Инфляция_03.11.2026-09.11.2026.pdf'}});
   await f.coordinator.deliver(job.id,'owner',new TextEncoder().encode('%PDF-test'),{title:'t',url:'https://rosstat.gov.ru/a',stamp:1});
-  assert.equal((await f.coordinator.summary()).jobs[0].fileName,'Инфляция_03.11.2026–09.11.2026.pdf');
+  assert.equal((await f.coordinator.summary()).jobs[0].fileName,'Инфляция_03.11.2026-09.11.2026.pdf');
 });
