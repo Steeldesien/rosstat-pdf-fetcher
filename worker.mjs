@@ -1,5 +1,5 @@
 import {DurableObject} from 'cloudflare:workers';
-import {Coordinator, commandMode} from './coordinator.mjs';
+import {Coordinator, commandMode, documentName} from './coordinator.mjs';
 
 async function github(env, path, options={}) {
   if (!env.GITHUB_TOKEN) throw new Error('Dispatch credential is not configured');
@@ -32,7 +32,7 @@ export class CoordinatorObject extends DurableObject {
         const form=new FormData();
         form.append('chat_id',env.TELEGRAM_CHAT_ID);
         form.append('caption',`${item.title}\n${item.url}\n${mode==='latest'?'Ручная загрузка /latest':'Автоматическая доставка'}`.slice(0,1024));
-        form.append('document',new Blob([bytes],{type:'application/pdf'}),'Rosstat.pdf');
+        form.append('document',new Blob([bytes],{type:'application/pdf'}),documentName(item.title));
         return telegram(env,'sendDocument',{body:form});
       }
     });

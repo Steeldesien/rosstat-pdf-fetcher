@@ -25,6 +25,24 @@ export function reportEnd(title) {
   return new Date(result+'T00:00:00Z').toISOString().slice(0,10)===result ? result : null;
 }
 
+export function documentName(title) {
+  const text=String(title).replace(/\s+/g,' ').toLowerCase();
+  const months=['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+  try {
+    const end=reportEnd(text);
+    const start=text.match(new RegExp('(?:^| )с\\s+(\\d{1,2})(?:\\s+('+months.join('|')+'))?(?:\\s+(\\d{4})(?:\\s+года?)?)?\\s+по\\s'));
+    if (!end || !start) return 'Rosstat.pdf';
+    const endMonth=Number(end.slice(5,7)),month=start[2]?months.indexOf(start[2])+1:endMonth;
+    const year=start[3]?Number(start[3]):Number(end.slice(0,4))-(month>endMonth?1:0);
+    const first=`${year}-${String(month).padStart(2,'0')}-${start[1].padStart(2,'0')}`;
+    const date=new Date(first+'T00:00:00Z');
+    if (!Number.isFinite(+date) || date.toISOString().slice(0,10)!==first || first>end) return 'Rosstat.pdf';
+    const format=value=>value.split('-').reverse().join('.');
+    const prefix=text.startsWith('об оценке индекса потребительских цен')?'Инфляция':'Росстат';
+    return `${prefix}_${format(first)}–${format(end)}.pdf`;
+  } catch {return 'Rosstat.pdf';}
+}
+
 function expectedEnd(start) {
   const date=new Date(start.slice(0,10)+'T00:00:00Z');
   date.setUTCDate(date.getUTCDate()-((date.getUTCDay()+6)%7));
@@ -195,6 +213,7 @@ export class Coordinator {
       try {
         const result=await this.effects.send(bytes,item,job.mode);
         job.phase='completed'; job.messageId=result.message_id; job.deliveredAt=this.effects.now();
+        job.fileName=result.document?.file_name||null;
         job.sourceUrl=item.url;
         if (job.targetId && !state.completed.includes(job.targetId)) state.completed.push(job.targetId);
         await this.save(state);
@@ -217,6 +236,6 @@ export class Coordinator {
 
   async summary() {
     const state=await this.state();
-    return {completed:state.completed.length,jobs:Object.values(state.jobs).map(j=>({id:j.id,kind:j.kind,mode:j.mode,phase:j.phase,createdAt:j.createdAt,deliveredAt:j.deliveredAt||null}))};
+    return {completed:state.completed.length,jobs:Object.values(state.jobs).map(j=>({id:j.id,kind:j.kind,mode:j.mode,phase:j.phase,createdAt:j.createdAt,deliveredAt:j.deliveredAt||null,fileName:j.fileName||null}))};
   }
 }

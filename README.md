@@ -14,4 +14,6 @@ Explicit publication-calendar dates take precedence. After the configured calend
 
 Standard GitHub Actions runners in public repositories are free of monthly execution-minute billing; platform limits and launch delays still apply. Cloudflare Free retains daily quotas. No paid plan is required.
 
+Inflation PDFs are named with the complete reporting range, for example `Инфляция_03.11.2026–09.11.2026.pdf`. The range is taken from the release title, including month and year transitions.
+
 Run local checks with `python -m unittest discover -v` and `node --test coordinator.test.mjs`.
