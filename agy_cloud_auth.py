@@ -93,12 +93,23 @@ def diagnostic(stage, raw='', returncode=None):
     }.items() if any(word in lower for word in words)]}
 
 
-def settings(home):
-    path = home/'.gemini/antigravity-cli/settings.json'
+def settings(home,provider='antigravity'):
+    path = home/('.gemini/settings.json' if provider=='gemini-cli' else '.gemini/antigravity-cli/settings.json')
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.loads(path.read_text()) if path.exists() else {}
-    data['useG1Credits'] = False
+    if provider=='gemini-cli':
+        data.setdefault('security',{}).setdefault('auth',{})['selectedType']='oauth-personal'
+        data['telemetry']={'enabled':False}
+    else:data['useG1Credits'] = False
     path.write_text(json.dumps(data))
+
+
+def credentials_ready(home,provider):
+    if provider!='gemini-cli':return False
+    try:
+        value=json.loads((home/'.gemini/oauth_creds.json').read_text())
+        return isinstance(value.get('refresh_token'),str) and len(value['refresh_token'])>8
+    except (OSError,ValueError):return False
 
 
 def main():
@@ -119,27 +130,34 @@ def main():
         return r.json()
 
     stage, raw, exit_code = 'claim', '', None
+    provider=os.environ.get('AUTH_PROVIDER','antigravity')
     try:
         claim = call('claim')
         home = Path.home()
-        binary = str(Path(os.environ['RUNNER_TEMP'])/'agy-bin/agy')
+        binary = 'gemini' if provider=='gemini-cli' else str(Path(os.environ['RUNNER_TEMP'])/'agy-bin/agy')
         if claim['action'] == 'verify':
             stage='restore'
             restore(home, secret, claim['profile'])
-        settings(home)
+        settings(home,provider)
+        # No bridge, GitHub or API credentials are exposed to the interactive agent.
+        env={k:v for k,v in os.environ.items() if not any(word in k.upper() for word in ['TOKEN','SECRET','API_KEY','BROKER_'])}
+        env.pop('DBUS_SESSION_BUS_ADDRESS',None)
+        if provider=='gemini-cli':env['NO_BROWSER']='true'
         if claim['action'] == 'login':
             stage='login'
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 10000, 0, 0))
             # Keyring fallback in a genuinely headless runner; do not borrow PC credentials.
-            env = dict(os.environ)
-            env.pop('DBUS_SESSION_BUS_ADDRESS', None)
-            proc = subprocess.Popen([binary, 'acp', '--login', '--disable-telemetry'], stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True)
+            workspace=tempfile.TemporaryDirectory()
+            command=[binary] if provider=='gemini-cli' else [binary,'acp','--login','--disable-telemetry']
+            proc = subprocess.Popen(command,stdin=slave,stdout=slave,stderr=slave,env=env,cwd=workspace.name,start_new_session=True)
             os.close(slave)
             raw, published, sent = '', False, False
             deadline, next_poll = time.monotonic()+900, 0
             try:
                 while proc.poll() is None and time.monotonic()<deadline:
+                    if provider=='gemini-cli' and credentials_ready(home,provider):
+                        proc.terminate();break
                     if select.select([master], [], [], 1)[0]:
                         try:
                             raw = (raw + os.read(master, 65536).decode(errors='replace'))[-100000:]
@@ -163,13 +181,14 @@ def main():
                     proc.kill()
                 proc.wait(timeout=10)
                 exit_code=proc.returncode
-                if proc.returncode != 0:
+                if proc.returncode != 0 and not credentials_ready(home,provider):
                     raise RuntimeError('Cloud CLI login did not complete')
             finally:
                 if proc.poll() is None:
                     proc.kill()
                 os.close(master)
-        settings(home)
+                workspace.cleanup()
+        settings(home,provider)
         if claim['action']=='login':
             stage='checkpoint_seal'
             profile,files=seal(home,secret)
@@ -177,7 +196,9 @@ def main():
             call('checkpoint',profile=profile,files=files)
         stage='provider_probe'
         with tempfile.TemporaryDirectory() as workspace:
-            result = subprocess.run([binary, '-p', 'Reply exactly CLOUD_SESSION_VERIFIED. Do not use tools or read files.', '--output-format', 'json', '--print-timeout', '90s'], cwd=workspace, capture_output=True, text=True, timeout=110)
+            command=[binary,'-p','Reply exactly CLOUD_SESSION_VERIFIED. Do not use tools or read files.','--output-format','json']
+            if provider!='gemini-cli':command+=['--print-timeout','90s']
+            result=subprocess.run(command,cwd=workspace,env=env,capture_output=True,text=True,timeout=110)
         ok = result.returncode == 0 and 'CLOUD_SESSION_VERIFIED' in result.stdout
         raw=result.stdout+'\n'+result.stderr
         exit_code=result.returncode

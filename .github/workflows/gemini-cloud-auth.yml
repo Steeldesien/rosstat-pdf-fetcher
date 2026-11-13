@@ -1,0 +1,38 @@
+name: Gemini CLI private cloud login
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: Opaque short-lived private authorization session
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: gemini-cli-private-login
+  cancel-in-progress: false
+jobs:
+  authenticate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install official Gemini CLI
+        run: |
+          npm install --global @google/gemini-cli
+          python -m pip install requests cryptography
+      - name: Private sign-in or fresh-runner restoration check
+        env:
+          AUTH_PROVIDER: gemini-cli
+          AUTH_SESSION_ID: ${{ inputs.session_id }}
+          BROKER_URL: ${{ secrets.BROKER_URL }}
+          BROKER_TOKEN: ${{ secrets.BROKER_TOKEN }}
+        run: python -u agy_cloud_auth.py

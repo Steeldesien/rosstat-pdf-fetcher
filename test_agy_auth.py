@@ -11,6 +11,17 @@ except ImportError:
 
 
 class AuthTests(unittest.TestCase):
+    def test_gemini_cli_settings_and_auth_completion(self):
+        self.assertIsNotNone(a)
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory)
+            a.settings(home,'gemini-cli')
+            data=__import__('json').loads((home/'.gemini/settings.json').read_text())
+            self.assertEqual(data['security']['auth']['selectedType'],'oauth-personal')
+            self.assertFalse(a.credentials_ready(home,'gemini-cli'))
+            (home/'.gemini/oauth_creds.json').write_text('{"refresh_token":"fake-refresh-token"}')
+            self.assertTrue(a.credentials_ready(home,'gemini-cli'))
+
     def test_encryption_and_safe_restore(self):
         self.assertIsNotNone(a)
         with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
