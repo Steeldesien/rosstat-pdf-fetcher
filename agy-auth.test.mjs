@@ -39,3 +39,12 @@ test('successful sign-in checkpoint survives a subsequent provider-probe failure
   const v=await auth.start('verify');
   assert.deepEqual((await auth.runner(v.id,'fresh','claim',{})).profile,profile);
 });
+test('callback URL must belong to the current OAuth state and only its code reaches the runner',async()=>{
+  const f=fixture(),auth=new api.AgyAuth(f.store,f.now),s=await auth.start('login');
+  await auth.runner(s.id,'first','claim',{});
+  await auth.runner(s.id,'first','url',{url:'https://accounts.google.com/o/oauth2/auth?state=current&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback'});
+  await assert.rejects(auth.submit(s.id,'https://antigravity.google/oauth-callback?state=old&code=private-code'));
+  await assert.rejects(auth.submit(s.id,'https://attacker.test/oauth-callback?state=current&code=private-code'));
+  await auth.submit(s.id,'https://antigravity.google/oauth-callback?state=current&code=private-code');
+  assert.equal((await auth.runner(s.id,'first','code',{})).code,'private-code');
+});

@@ -18,6 +18,11 @@ export class AgyAuth {
   async submit(id,code){
     const s=await this.get(id);
     if(s.phase!=='awaiting_code'||typeof code!=='string'||code.length<4||code.length>4096||/[\r\n\x00]/.test(code))throw Error('Invalid authorization code');
+    if(code.startsWith('https://')){
+      const callback=new URL(code),login=new URL(s.url),expected=new URL(login.searchParams.get('redirect_uri'));
+      if(callback.origin!==expected.origin||callback.pathname!==expected.pathname||!callback.searchParams.get('state')||callback.searchParams.get('state')!==login.searchParams.get('state')||!callback.searchParams.get('code'))throw Error('OAuth state mismatch');
+      code=callback.searchParams.get('code');
+    }
     s.code=code;s.phase='code_submitted';await this.storage.put('agy:session:'+id,s);return {ok:true};
   }
   async runner(id,owner,op,data){
