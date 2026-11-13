@@ -1,0 +1,36 @@
+name: Antigravity private cloud login
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: Opaque short-lived private authorization session
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: agy-private-cloud-login
+  cancel-in-progress: false
+jobs:
+  authenticate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install official CLI and encryption dependencies
+        shell: bash
+        run: |
+          python -m pip install requests cryptography
+          curl --fail --silent --show-error --location https://antigravity.google/cli/install.sh --output "$RUNNER_TEMP/agy-install.sh"
+          bash "$RUNNER_TEMP/agy-install.sh" --dir "$RUNNER_TEMP/agy-bin"
+      - name: Private sign-in or fresh-runner restoration check
+        env:
+          AUTH_SESSION_ID: ${{ inputs.session_id }}
+          BROKER_URL: ${{ secrets.BROKER_URL }}
+          BROKER_TOKEN: ${{ secrets.BROKER_TOKEN }}
+        run: python -u agy_cloud_auth.py

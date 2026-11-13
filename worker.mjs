@@ -1,6 +1,7 @@
 import {DurableObject} from 'cloudflare:workers';
 import {Coordinator, commandMode, connectionTarget, documentName, deliveryCaption, REPORTS, analysisModes, ANALYSIS_LABELS} from './coordinator.mjs';
 import {AnalysisCache} from './analysis-cache.mjs';
+import {AgyAuth} from './agy-auth.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis} from './gemini.mjs';
 
 async function github(env, path, options={}) {
@@ -26,6 +27,7 @@ export class CoordinatorObject extends DurableObject {
   constructor(ctx,env) {
     super(ctx,env);
     this.storage=ctx.storage;this.env=env;
+    this.agyAuth=new AgyAuth(ctx.storage);
     this.analyses=new AnalysisCache(ctx.storage,plan=>generateAnalysis(env,plan));
     this.coordinator=new Coordinator(ctx.storage,{...JSON.parse(env.SCHEDULE_JSON || '{"targets":[]}'),analysisEnabled:env.ANALYSIS_ENABLED==='true'&&!!env.GEMINI_API_KEY},{
       now:()=>Date.now(),
@@ -44,6 +46,7 @@ export class CoordinatorObject extends DurableObject {
     });
   }
   async invoke(method,args=[]) {
+    if(method==='agyAuth')return this.coordinator.serial(()=>this.agyAuth[args[0]](...args.slice(1)));
     if (method==='analyzeJob') return this.analyzeJob(...args);
     if (method==='sendAnalysisCard') return this.sendAnalysisCard(...args);
     if (method==='sourceArchive') {
@@ -217,6 +220,11 @@ export default {
         return new Response('OK');
       }
       if (admin) {
+        if(path==='/admin/agy-auth'&&request.method==='POST'){
+          const d=await request.json();
+          if(!['start','status','submit'].includes(d.op))return new Response('Invalid request',{status:400});
+          return reply(await object.invoke('agyAuth',[d.op,...(d.op==='start'?[d.action]:d.op==='submit'?[d.session_id,d.code]:[d.session_id])]));
+        }
         if (path==='/admin/summary' && request.method==='GET') return reply(await object.invoke('summary'));
         if (path==='/admin/analysis-status' && request.method==='GET') return reply(await object.invoke('analysisStatus'));
         if (path==='/admin/card-summary' && request.method==='GET') return reply(await object.invoke('cardSummary'));
@@ -241,6 +249,7 @@ export default {
         if (Number(request.headers.get('Content-Length')||0)>25*1024*1024+65536) return new Response('Too large',{status:413});
         const form=['/runner/deliver','/runner/card-upload'].includes(path) ? await request.formData() : null;
         const data=form ? Object.fromEntries(form) : await request.json();
+        if(path==='/runner/agy-auth'&&validId(data.session_id)&&validId(data.run_id))return reply(await object.invoke('agyAuth',['runner',data.session_id,data.run_id,data.op,data]));
         if (!validId(data.job_id) || !validId(data.run_id)) return new Response('Invalid request',{status:400});
         if(path==='/runner/card')return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key]));
         if(path==='/runner/card-upload'&&data.image instanceof File)return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key,new Uint8Array(await data.image.arrayBuffer())]));
