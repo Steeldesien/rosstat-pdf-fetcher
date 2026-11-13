@@ -150,8 +150,12 @@ def main():
                         call('url', url=url)
                         published = True
                     if published and not sent and time.monotonic()>=next_poll:
-                        code = call('code').get('code')
                         next_poll = time.monotonic()+3
+                        try:
+                            code = call('code').get('code')
+                        except (requests.Timeout,requests.ConnectionError):
+                            # A temporary private-bridge interruption must not abort login.
+                            continue
                         if code:
                             os.write(master, code.encode()+b'\n')
                             sent = True
