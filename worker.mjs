@@ -149,7 +149,13 @@ export default {
           const choice=authorized?await object.invoke('selectAnalysis',[update]):null;
           try {await telegram(env,'answerCallbackQuery',{headers:{'Content-Type':'application/json'},body:JSON.stringify({callback_query_id:callback.id,text:choice?'Проверяю свежие выпуски…':'Меню устарело или открыто другим участником. Выберите команду заново.'})});}catch{}
           if (!choice) return new Response('OK');
-          await object.invoke('manual',['callback:'+callback.id,choice.kind,choice.mode==='pdf'?null:choice.mode]);
+          const job=await object.invoke('manual',['callback:'+callback.id,choice.kind,choice.mode==='pdf'?null:choice.mode]);
+          if (job.created) {
+            try {await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
+              chat_id:chat.id,...(callback.message.message_thread_id?{message_thread_id:callback.message.message_thread_id}:{}),
+              text:choice.mode==='pdf'?'Запрос на загрузку файла принят, ожидайте.':'Запрос передан на анализ, ожидайте.'
+            })});}catch{console.log('Analysis acknowledgement unavailable');}
+          }
           await object.invoke('tick');return new Response('OK');
         }
         const selected=commandMode(update,env.TELEGRAM_CHAT_ID,destination,env.BOT_USERNAME);
