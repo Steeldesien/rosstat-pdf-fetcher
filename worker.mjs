@@ -2,7 +2,10 @@ import {DurableObject} from 'cloudflare:workers';
 import {Coordinator, commandMode, connectionTarget, documentName, deliveryCaption, REPORTS, analysisModes, ANALYSIS_LABELS} from './coordinator.mjs';
 import {AnalysisCache} from './analysis-cache.mjs';
 import {AgyAuth} from './agy-auth.mjs';
+import {generateWorkersAnalysis} from './workers-ai.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis} from './gemini.mjs';
+
+const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
 
 async function github(env, path, options={}) {
   if (!env.GITHUB_TOKEN) throw new Error('Dispatch credential is not configured');
@@ -28,8 +31,10 @@ export class CoordinatorObject extends DurableObject {
     super(ctx,env);
     this.storage=ctx.storage;this.env=env;
     this.agyAuth=new AgyAuth(ctx.storage);
-    this.analyses=new AnalysisCache(ctx.storage,plan=>generateAnalysis(env,plan));
-    this.coordinator=new Coordinator(ctx.storage,{...JSON.parse(env.SCHEDULE_JSON || '{"targets":[]}'),analysisEnabled:env.ANALYSIS_ENABLED==='true'&&!!env.GEMINI_API_KEY},{
+    this.analyses=new AnalysisCache(ctx.storage,plan=>env.ANALYSIS_PROVIDER==='workers-ai'&&plan.kind==='inflation'?generateWorkersAnalysis(env,plan):generateAnalysis(env,plan));
+    const probeStore={get:key=>ctx.storage.get('workers-ai-facts-v2:'+key),put:(key,value)=>ctx.storage.put('workers-ai-facts-v2:'+key,value)};
+    this.workersAnalyses=new AnalysisCache(probeStore,plan=>generateWorkersAnalysis(env,plan));
+    this.coordinator=new Coordinator(ctx.storage,{...JSON.parse(env.SCHEDULE_JSON || '{"targets":[]}'),analysisEnabled:analysisAvailable(env)},{
       now:()=>Date.now(),
       dispatch:id=>github(env,'actions/workflows/download.yml/dispatches',{
         method:'POST',body:JSON.stringify({ref:'main',inputs:{job_id:id}})
@@ -47,6 +52,12 @@ export class CoordinatorObject extends DurableObject {
   }
   async invoke(method,args=[]) {
     if(method==='agyAuth')return this.coordinator.serial(()=>this.agyAuth[args[0]](...args.slice(1)));
+    if(method==='workersPreview'){
+      const plan=args[0];validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.workersAnalyses.get(plan);
+    }
+    if(method==='workersReview'){
+      const [plan,action]=args;validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.workersAnalyses.review(plan,action,renderAnalysis);
+    }
     if (method==='analyzeJob') return this.analyzeJob(...args);
     if (method==='sendAnalysisCard') return this.sendAnalysisCard(...args);
     if (method==='sourceArchive') {
@@ -74,7 +85,7 @@ export class CoordinatorObject extends DurableObject {
     if (method==='analysisReview') {
       const [plan,action]=args;validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.analyses.review(plan,action,renderAnalysis);
     }
-    if (method==='analysisStatus') return {enabled:this.env.ANALYSIS_ENABLED==='true',keyConfigured:!!this.env.GEMINI_API_KEY,model:this.env.GEMINI_MODEL||null};
+    if (method==='analysisStatus') return {enabled:analysisAvailable(this.env),keyConfigured:!!this.env.GEMINI_API_KEY,provider:this.env.ANALYSIS_PROVIDER||'gemini',workersBinding:!!this.env.AI,model:this.env.ANALYSIS_PROVIDER==='workers-ai'?this.env.WORKERS_AI_MODEL:this.env.GEMINI_MODEL||null,...(this.env.ANALYSIS_PROVIDER==='workers-ai'?{workersReports:['inflation'],otherReportsProvider:'gemini'}:{})};
     if (method==='cardSummary') {
       const cache=await this.storage.list({prefix:'summary-card:'}),deliveries=await this.storage.list({prefix:'summary-card-delivery:'});
       return {cachedImages:cache.size,sent:[...deliveries.values()].filter(v=>v.status==='sent').length,reused:[...deliveries.values()].filter(v=>v.status==='sent'&&v.cached).length};
@@ -202,7 +213,7 @@ export default {
         const selected=commandMode(update,env.TELEGRAM_CHAT_ID,destination,env.BOT_USERNAME);
         if (!selected) return new Response('OK');
         const kind=selected==='latest'?'inflation':selected;
-        if (env.ANALYSIS_ENABLED==='true' && env.GEMINI_API_KEY) {
+        if (analysisAvailable(env)) {
           const menu=await object.invoke('analysisMenu',[update,kind]);
           if (!menu.replay) await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:update.message.chat.id,
             ...(update.message.message_thread_id?{message_thread_id:update.message.message_thread_id}:{}),
@@ -230,6 +241,8 @@ export default {
         if (path==='/admin/card-summary' && request.method==='GET') return reply(await object.invoke('cardSummary'));
         if (request.method!=='POST') return new Response('Method not allowed',{status:405});
         if (path==='/admin/analysis-preview') return reply(await object.invoke('analysisPreview',[await request.json()]));
+        if (path==='/admin/workers-ai-preview') return reply(await object.invoke('workersPreview',[await request.json()]));
+        if (path==='/admin/workers-ai-review') {const d=await request.json();return reply(await object.invoke('workersReview',[d.plan,d.action]));}
         if (path==='/admin/analysis-review') {
           const data=await request.json();return reply(await object.invoke('analysisReview',[data.plan,data.action]));
         }
@@ -272,7 +285,7 @@ export default {
       return new Response('Not found',{status:404});
     } catch (error) {
       console.log('Private coordinator operation failed');
-      if (admin && ['/admin/analysis-preview','/admin/analysis-review'].includes(path)) return reply({ok:false,providerStatus:error.providerStatus||null,error:error.name==='TimeoutError'?'timeout':error.message?.includes('uncertain')?'uncertain':error.message?.includes('evidence')?'evidence_validation':'analysis_failed',...(error.review?{review:error.review}:{})});
+      if (admin && ['/admin/analysis-preview','/admin/analysis-review','/admin/workers-ai-preview','/admin/workers-ai-review'].includes(path)) return reply({ok:false,providerStatus:error.providerStatus||null,error:error.name==='TimeoutError'?'timeout':error.message?.includes('uncertain')?'uncertain':error.message?.includes('evidence')?'evidence_validation':'analysis_failed',...(error.review?{review:error.review}:{})});
       return new Response('Retry later',{status:503});
     }
   },

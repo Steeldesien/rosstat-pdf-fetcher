@@ -47,6 +47,7 @@ export class AnalysisCache {
       throw Error('Invalid analysis output');
     }
     const record={status:'ready',text:result.text,model:result.model,createdAt:Date.now(),
+      ...(result.usage?{usage:result.usage}:{}),
       kind:plan.kind,mode:plan.mode,start:plan.start,end:plan.end,documents:plan.documents.map(d=>({title:d.title,url:d.url,sha256:d.sha256,role:d.role}))};
     await this.store.put(storageKey,record);
     return {...record,key,cached:false};
