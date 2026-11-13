@@ -20,6 +20,24 @@ class DeliveryBehavior(unittest.TestCase):
         except ModuleNotFoundError:
             self.fail('The public downloader has not been implemented yet')
 
+    def test_analysis_runs_after_pdf_delivery_with_current_bytes_reused(self):
+        job={'id':'analysis-job','kind':'inflation','mode':'latest','analysis_mode':'release'}
+        body=rss((TITLE,SOURCE,'Wed, 11 Nov 2026 19:00:00 +0300'))
+        order=[]
+        def analyze(job,rows,known):
+            order.append('analysis'); self.assertEqual(known[SOURCE],b'%PDF-real')
+        self.module.check_job(job,lambda url:body if url==self.module.RSS else b'%PDF-real',
+                              lambda *args:order.append('pdf'),analyze=analyze)
+        self.assertEqual(order,['pdf','analysis'])
+
+    def test_scheduled_analysis_loads_history_only_after_fresh_release_arrives(self):
+        job={'id':'scheduled-analysis','kind':'inflation','mode':'scheduled','analysis_mode':'release',
+             'not_before':'2026-11-18T00:00:00+05:00'}
+        calls=[]
+        def fetch(url): calls.append(url);return rss((TITLE,SOURCE,'Wed, 11 Nov 2026 19:00:00 +0300'))
+        self.assertEqual(self.module.check_job(job,fetch,lambda *a:None,analyze=lambda *a:None),'waiting')
+        self.assertEqual(calls,[self.module.RSS])
+
     def test_late_release_is_accepted_after_midnight(self):
         job = {'id': 'weekly-job', 'kind': 'inflation', 'mode': 'scheduled',
                'not_before': '2026-11-11T00:00:00+05:00'}

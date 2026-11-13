@@ -27,7 +27,7 @@ jobs:
       - name: Downloader tests
         run: python -m unittest discover -v
       - name: Coordinator tests
-        run: node --test coordinator.test.mjs
+        run: node --test coordinator.test.mjs analysis.test.mjs
       - name: Download and relay PDF
         env:
           JOB_ID: ${{ inputs.job_id }}

@@ -22,6 +22,18 @@ To switch delivery to a group, the owner sends `/connect@YourBotUsername` in tha
 
 Run local checks with `python -m unittest discover -v` and `node --test coordinator.test.mjs`.
 
+## Optional analysis
+
+Set the private Worker secret `GEMINI_API_KEY`, select an available Free model with `GEMINI_MODEL`, and enable `ANALYSIS_ENABLED=true` only after a private real-PDF test. No AI credential is given to GitHub Actions. The provider receives public Rosstat documents and a fixed analysis prompt; Telegram identities and group messages are excluded.
+
+With analysis enabled, a report command first offers inline period buttons and a PDF-only option. Weekly reports offer the latest release and rolling 1, 2 or 3 months. Monthly reports offer the latest release and 3, 6 or 12 reporting months. GDP offers the latest release and 6 or 12 months of one comparable publication series. Ranges end at the newest available reporting period, not the command date. "Three months" is deliberately not labelled a calendar quarter. The PDF arrives before the analysis.
+
+Python parses actual report periods, backfills missing documents from the official news archive, checks continuity, hashes the PDF bytes and extracts page text. Incomplete windows are reported rather than analysed as complete periods. Backfill requests are bounded and spaced; no additional scheduled polling is introduced. Native PDFs accompany extracted text so the model can inspect tables. Quoted key metrics are checked against extracted source pages before sending an answer. Cumulative releases are not added together.
+
+The application cache resides in private Durable Object storage. A key includes the report, mode, exact interval and content hashes of all selected and baseline documents. New releases, corrections and changed source sets produce a new key. Identical requests, including concurrent requests, reuse the stored answer without a model request. Ready answers survive redeployments; PDFs are not retained in the cache. Unknown outcomes after an interrupted provider call are held for review instead of automatically submitted again. Explicit provider refusals may be retried on a later user request. Model errors do not prevent PDF delivery.
+
+Analysis checks: `node --test coordinator.test.mjs analysis.test.mjs` and `python -m unittest discover -v`.
+
 ## Manual report menu
 
 `/inflation` weekly inflation, `/cpi` monthly CPI, `/gdp` GDP, `/fuel` weekly oil-product prices, `/gasoline` monthly gasoline prices, `/industry` industrial production, `/ppi` producer prices, `/finance` company financial results, `/business` business activity, `/wages` wage arrears. The old `/latest` remains an alias for weekly inflation and is omitted from the menu.

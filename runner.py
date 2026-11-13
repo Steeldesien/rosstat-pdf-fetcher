@@ -130,7 +130,7 @@ def entries(xml, kind):
     return sorted(found, key=lambda item: item['stamp'])
 
 
-def check_job(job, fetch, deliver):
+def check_job(job, fetch, deliver, analyze=None):
     found = entries(fetch(RSS), job['kind'])
     if job['mode'] == 'latest':
         # The catalogue complements the short RSS feed. Prefer the newest actual reporting period.
@@ -151,6 +151,8 @@ def check_job(job, fetch, deliver):
         raise ValueError('Source response is not an acceptable PDF')
     item['received_stamp'] = time.time()
     deliver(job, data, item)
+    if job.get('analysis_mode') and analyze:
+        analyze(job, found, {item['url']:data})
     return 'delivered'
 
 
@@ -193,7 +195,7 @@ class Broker:
         self.client.headers['Authorization'] = 'Bearer ' + os.environ['BROKER_TOKEN']
 
     def call(self, path, **kwargs):
-        response = self.client.post(self.base + '/runner/' + path, timeout=(15, 90), allow_redirects=False, **kwargs)
+        response = self.client.post(self.base + '/runner/' + path, timeout=(15, 240 if path=='analyze' else 90), allow_redirects=False, **kwargs)
         if not response.ok:
             raise RuntimeError('Private delivery broker rejected the request')
         return response.json()
@@ -210,6 +212,20 @@ class Broker:
                            files={'document': ('Rosstat.pdf', data, 'application/pdf')})
         if result.get('status') != 'completed':
             raise RuntimeError('Delivery has not been confirmed')
+
+    def analyze(self, job, found, known, fetch):
+        from analysis import IncompleteArchive, prepare_plan, complete_archive
+        try:
+            history=self.call('archive',json={'job_id':job['id'],'run_id':self.run_id}).get('documents',[])
+            found += history
+            if job['mode']!='latest' and job['analysis_mode']!='release':
+                found += catalogue_entries(fetch(CATALOGUE),job['kind'])
+            plan=prepare_plan(complete_archive(found,job['kind'],job['analysis_mode'],fetch),fetch,known)
+            self.call('archive-save',json={'job_id':job['id'],'run_id':self.run_id,
+                'documents':[{k:d[k] for k in ['title','url','period_start','period_end']} for d in plan['documents']]})
+        except (IncompleteArchive,ValueError):
+            return self.call('analysis-failure',json={'job_id':job['id'],'run_id':self.run_id,'reason':'incomplete_archive'})
+        return self.call('analyze',json={'job_id':job['id'],'run_id':self.run_id,'plan':plan})
 
     def release(self, job_id):
         self.call('release', json={'job_id': job_id, 'run_id': self.run_id})
@@ -239,7 +255,8 @@ def poll(job_id, broker, fetch, sleep=time.sleep, clock=time.monotonic, duration
                 claimed = True
                 if claim['job']['id'] != job_id:
                     raise ValueError('Unexpected job identifier')
-                if check_job(claim['job'], fetch, broker.deliver) == 'delivered':
+                analysis=(lambda job,found,known:broker.analyze(job,found,known,fetch)) if hasattr(broker,'analyze') else None
+                if check_job(claim['job'], fetch, broker.deliver,analyze=analysis) == 'delivered':
                     return 'completed'
                 delay = broker.waiting(job_id)['interval_seconds']
                 if delay > 60:

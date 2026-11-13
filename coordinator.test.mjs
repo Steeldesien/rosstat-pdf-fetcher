@@ -4,6 +4,43 @@ let api;
 try { api = await import('./coordinator.mjs'); }
 catch { assert.fail('The private coordinator has not been implemented yet'); }
 
+test('analysis menu offers frequency-specific windows and a PDF-only option',()=>{
+  assert.equal(typeof api.analysisModes,'function');
+  assert.deepEqual(api.analysisModes('inflation'),['release','m1','m2','m3']);
+  assert.deepEqual(api.analysisModes('gdp'),['release','m6','m12']);
+});
+
+test('menu callbacks are bound to requester, chat, topic and expiry',async()=>{
+  const f=fixture();
+  assert.equal(typeof f.coordinator.analysisMenu,'function');
+  const message={chat:{id:-100123,type:'supergroup'},from:{id:42},message_thread_id:3};
+  const menu=await f.coordinator.analysisMenu({update_id:50,message},'inflation');
+  const make=(from=42,chat=-100123,topic=3)=>({update_id:51,callback_query:{id:'cb',from:{id:from},data:`an:${menu.id}:m1`,message:{chat:{id:chat},message_thread_id:topic}}});
+  assert.equal(await f.coordinator.selectAnalysis(make(43)),null);
+  assert.equal(await f.coordinator.selectAnalysis(make(42,-100124)),null);
+  assert.equal(await f.coordinator.selectAnalysis(make(42,-100123,4)),null);
+  const accepted=await f.coordinator.selectAnalysis(make());
+  assert.equal(accepted.kind,'inflation');assert.equal(accepted.mode,'m1');
+  f.advance(3600001);assert.equal(await f.coordinator.selectAnalysis(make()),null);
+});
+
+test('PDF is delivered once while analysis remains recoverable after runner restart',async()=>{
+  const f=fixture();
+  const job=await f.coordinator.manual(999,'inflation','m1');
+  const claim=await f.coordinator.claim(job.id,'run');
+  assert.equal(claim.job.analysis_mode,'m1');
+  const bytes=new TextEncoder().encode('%PDF-test'),item={title:'t',url:'https://rosstat.gov.ru/a',stamp:1};
+  await f.coordinator.deliver(job.id,'run',bytes,item);
+  await f.coordinator.deliver(job.id,'run',bytes,item);
+  assert.equal(f.sent.length,1);
+  await f.coordinator.release(job.id,'run');f.advance(3600001);
+  assert.equal((await f.coordinator.claim(job.id,'new-run')).status,'ready');
+  assert.equal(typeof f.coordinator.analysisAccess,'function');
+  assert.equal((await f.coordinator.analysisAccess(job.id,'new-run')).mode,'m1');
+  await f.coordinator.finishAnalysis(job.id,'new-run','done');
+  assert.equal((await f.coordinator.claim(job.id,'another')).status,'completed');
+});
+
 function fixture(nowIso='2026-11-18T17:00:00Z') {
   const data = new Map();
   const store = {

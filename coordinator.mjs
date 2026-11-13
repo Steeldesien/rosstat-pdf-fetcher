@@ -180,13 +180,39 @@ export class Coordinator {
     await this.store.put('coordinator', state);
   }
 
-  async manual(updateId,kind='inflation') {
+  async analysisMenu(update,kind) {
+    if (!REPORT_KINDS.has(kind)) throw Error('Unsupported report');
+    return this.serial(async()=>{
+      const key='analysis-menu-update:'+update.update_id;
+      const previous=await this.store.get(key);
+      if (previous) return {...previous,replay:true};
+      const id=crypto.randomUUID().replaceAll('-','').slice(0,16),message=update.message;
+      const menu={id,kind,chatId:String(message.chat.id),userId:String(message.from.id),threadId:message.message_thread_id||0,expires:this.effects.now()+3600000};
+      await this.store.put('analysis-menu:'+id,menu);
+      await this.store.put(key,menu);
+      return menu;
+    });
+  }
+
+  async selectAnalysis(update) {
+    const callback=update.callback_query,match=callback?.data?.match(/^an:([a-f0-9]{16}):(pdf|release|m1|m2|m3|m6|m12)$/);
+    if (!match) return null;
+    const menu=await this.store.get('analysis-menu:'+match[1]);
+    if (!menu || menu.expires<this.effects.now() || String(callback.from?.id)!==menu.userId ||
+        String(callback.message?.chat?.id)!==menu.chatId || (callback.message?.message_thread_id||0)!==menu.threadId ||
+        match[2]!=='pdf'&&!analysisModes(menu.kind).includes(match[2])) return null;
+    return {kind:menu.kind,mode:match[2]};
+  }
+
+  async manual(updateId,kind='inflation',analysisMode=null) {
     if (!REPORT_KINDS.has(kind)) throw new Error('Unsupported report');
+    if (analysisMode && !analysisModes(kind).includes(analysisMode)) throw Error('Unsupported analysis mode');
     return this.serial(async () => {
       const state=await this.state(), key=String(updateId);
       if (state.requests[key] && state.jobs[state.requests[key]]) return {id: state.requests[key], created: false};
       const id=crypto.randomUUID();
       state.jobs[id]={id,kind,mode:'latest',phase:'queued',createdAt:this.effects.now(),lastDispatch:0};
+      if (analysisMode) state.jobs[id].analysisMode=analysisMode;
       state.requests[key]=id;
       await this.save(state);
       return {id,created:true};
@@ -202,6 +228,7 @@ export class Coordinator {
         if (existing) continue;
         const id=crypto.randomUUID();
         state.jobs[id]={id,kind:target.kind,mode:'scheduled',not_before:dayStart(target.start),
+          ...(this.config.analysisEnabled?{analysisMode:'release'}:{}),
           ...(target.kind==='inflation'?{report_end:target.report_end||expectedEnd(target.start)}:{}),
           ...(target.kind==='gdp'?{gdp_period:target.gdp_period||target.id.match(/(\d{4}-Q[1-4])$/)?.[1]}:{}),
           start:target.start,targetId:target.id,phase:'queued',createdAt:now,lastDispatch:0};
@@ -236,6 +263,7 @@ export class Coordinator {
       job.owner=owner; job.leaseUntil=now+180000; job.phase='running';job.lastCheck=now;
       await this.save(state);
       const publicJob={id:job.id,kind:job.kind,mode:job.mode};
+      if (job.analysisMode) publicJob.analysis_mode=job.analysisMode;
       if (job.mode==='scheduled') publicJob.not_before=job.not_before;
       if (job.report_end) publicJob.report_end=job.report_end;
       if (job.gdp_period) publicJob.gdp_period=job.gdp_period;
@@ -282,6 +310,7 @@ export class Coordinator {
       if (!job) throw new Error('Unknown job');
       if (job.phase==='completed') return {status:'completed'};
       if (job.phase!=='running' || job.owner!==owner) throw new Error('Invalid lease');
+      if (job.pdfDelivered) return {status:'completed'};
       if (new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-' || bytes.length>25*1024*1024 || !sourceAllowed(item.url)) throw new Error('Invalid public document');
       if (job.gdp_period) {
         const match=item.title.toLowerCase().match(/\b(iv|iii|ii|i)\s+квартал[а-я]*\s+(\d{4})/);
@@ -293,7 +322,7 @@ export class Coordinator {
       job.phase='sending'; await this.save(state);
       try {
         const result=await this.effects.send(bytes,item,job.mode);
-        job.phase='completed'; job.messageId=result.message_id; job.deliveredAt=this.effects.now();
+        job.phase=job.analysisMode?'running':'completed'; job.pdfDelivered=true;job.messageId=result.message_id; job.deliveredAt=this.effects.now();
         job.fileName=result.document?.file_name||null;
         job.publicationStamp=Number.isFinite(item.stamp)?item.stamp:null;
         job.receivedStamp=Number.isFinite(item.receivedStamp)?item.receivedStamp:null;
@@ -310,6 +339,24 @@ export class Coordinator {
     });
   }
 
+  async analysisAccess(id,owner) {
+    return this.serial(async()=>{
+      const state=await this.state(),job=state.jobs[id];
+      if (!job || job.owner!==owner || !job.analysisMode || !job.pdfDelivered || job.phase!=='running') throw Error('Invalid analysis lease');
+      job.leaseUntil=this.effects.now()+300000;await this.save(state);
+      return {kind:job.kind,mode:job.analysisMode};
+    });
+  }
+
+  async finishAnalysis(id,owner,status) {
+    return this.serial(async()=>{
+      const state=await this.state(),job=state.jobs[id];
+      if (!job || job.owner!==owner || !job.pdfDelivered || !job.analysisMode) throw Error('Invalid analysis lease');
+      job.phase='completed';job.analysisStatus=String(status).slice(0,60);await this.save(state);
+      return {status:'completed'};
+    });
+  }
+
   async importCompleted(ids) {
     return this.serial(async()=>{
       const state=await this.state();
@@ -320,10 +367,15 @@ export class Coordinator {
 
   async summary() {
     const state=await this.state();
-    return {completed:state.completed.length,destination:await this.destination(),jobs:Object.values(state.jobs).map(j=>({id:j.id,kind:j.kind,mode:j.mode,phase:j.phase,createdAt:j.createdAt,deliveredAt:j.deliveredAt||null,fileName:j.fileName||null,publicationStamp:j.publicationStamp??null,receivedStamp:j.receivedStamp??null,caption:j.caption||null}))};
+    return {completed:state.completed.length,destination:await this.destination(),jobs:Object.values(state.jobs).map(j=>({id:j.id,kind:j.kind,mode:j.mode,phase:j.phase,createdAt:j.createdAt,deliveredAt:j.deliveredAt||null,fileName:j.fileName||null,publicationStamp:j.publicationStamp??null,receivedStamp:j.receivedStamp??null,caption:j.caption||null,analysisMode:j.analysisMode||null,analysisStatus:j.analysisStatus||null}))};
   }
 }
 import reportDefinitions from './reports.json' with {type:'json'};
 export const REPORTS=reportDefinitions;
 const REPORT_KINDS=new Set(REPORTS.map(item=>item.kind));
+export function analysisModes(kind) {
+  if (!REPORT_KINDS.has(kind)) throw Error('Unsupported report');
+  return ['inflation','fuel'].includes(kind)?['release','m1','m2','m3']:kind==='gdp'?['release','m6','m12']:['release','m3','m6','m12'];
+}
+export const ANALYSIS_LABELS={release:'Последний выпуск',m1:'Последний месяц',m2:'Последние 2 месяца',m3:'Последние 3 месяца',m6:'Последние 6 месяцев',m12:'Последние 12 месяцев'};
 
