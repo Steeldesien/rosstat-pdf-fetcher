@@ -4,6 +4,7 @@ import {AnalysisCache} from './analysis-cache.mjs';
 import {AgyAuth} from './agy-auth.mjs';
 import {generateWorkersAnalysis} from './workers-ai.mjs';
 import {normalizeGrowthNarrative} from './workers-weekly.mjs';
+import {reportProgress} from './status-messages.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
@@ -20,12 +21,12 @@ async function github(env, path, options={}) {
   return response.status===204 ? null : response.json();
 }
 
-async function telegram(env, method, options) {
+async function telegram(env, method, options, timeout=85000) {
   const response=await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
-    method:'POST',...options,signal:AbortSignal.timeout(85000)
+    method:'POST',...options,signal:AbortSignal.timeout(timeout)
   });
   const result=await response.json();
-  if (!response.ok || !result.ok) throw new Error('Telegram did not confirm the request');
+  if (!response.ok || !result.ok) throw Object.assign(new Error('Telegram did not confirm the request'),{telegramNotModified:method==='editMessageText'&&result.description?.includes('message is not modified')});
   return result.result;
 }
 
@@ -44,6 +45,9 @@ export class CoordinatorObject extends DurableObject {
     this.workersFullAnalyses=new AnalysisCache(fullStore,plan=>generateWorkersAnalysis({...env,WORKERS_AI_RICH_WEEKLY:'true'},plan));
     this.coordinator=new Coordinator(ctx.storage,{...JSON.parse(env.SCHEDULE_JSON || '{"targets":[]}'),analysisEnabled:analysisAvailable(env)},{
       now:()=>Date.now(),
+      progress:async(job,stage,previous)=>reportProgress(
+        (method,payload)=>telegram(env,method,{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)},10000),
+        await ctx.storage.get('destination')||{chatId:env.TELEGRAM_CHAT_ID},job,stage,previous),
       dispatch:id=>github(env,'actions/workflows/download.yml/dispatches',{
         method:'POST',body:JSON.stringify({ref:'main',inputs:{job_id:id}})
       }),
@@ -103,7 +107,7 @@ export class CoordinatorObject extends DurableObject {
       const cache=await this.storage.list({prefix:'summary-card:'}),deliveries=await this.storage.list({prefix:'summary-card-delivery:'});
       return {cachedImages:cache.size,sent:[...deliveries.values()].filter(v=>v.status==='sent').length,reused:[...deliveries.values()].filter(v=>v.status==='sent'&&v.cached).length};
     }
-    if (!['manual','tick','claim','deliver','backoff','waiting','release','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
+    if (!['manual','tick','claim','deliver','backoff','waiting','release','progress','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
     return this.coordinator[method](...args);
   }
 
@@ -121,6 +125,10 @@ export class CoordinatorObject extends DurableObject {
       } catch {
         text='PDF доставлен. Анализ сейчас недоступен: провайдер отказал в запросе, исчерпана квота либо ответ не удалось проверить. Подтверждённые результаты сохраняются; запросы с неопределённым исходом автоматически не повторяются.';
       }
+    }
+    if(selection.scheduled&&status==='failed'){
+      const finished=await this.coordinator.finishAnalysis(id,owner,status);
+      if(finished.progressUpdated)return finished;
     }
     const deliveryKey='analysis-delivery:'+id,saved=await this.storage.get(deliveryKey);
     if (!saved) {
@@ -281,6 +289,7 @@ export default {
         if(path==='/runner/card')return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key]));
         if(path==='/runner/card-upload'&&data.image instanceof File)return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key,new Uint8Array(await data.image.arrayBuffer())]));
         if (path==='/runner/claim') return reply(await object.invoke('claim',[data.job_id,data.run_id]));
+        if (path==='/runner/progress') return reply(await object.invoke('progress',[data.job_id,data.run_id,data.stage,data.key]));
         if (path==='/runner/release') return reply(await object.invoke('release',[data.job_id,data.run_id]));
         if (path==='/runner/backoff') return reply(await object.invoke('backoff',[data.job_id,data.run_id,data.seconds]));
         if (path==='/runner/waiting') return reply(await object.invoke('waiting',[data.job_id,data.run_id]));

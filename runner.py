@@ -130,7 +130,7 @@ def entries(xml, kind):
     return sorted(found, key=lambda item: item['stamp'])
 
 
-def check_job(job, fetch, deliver, analyze=None):
+def check_job(job, fetch, deliver, analyze=None, progress=None):
     found = entries(fetch(RSS), job['kind'])
     if job['mode'] == 'latest':
         # The catalogue complements the short RSS feed. Prefer the newest actual reporting period.
@@ -146,6 +146,7 @@ def check_job(job, fetch, deliver, analyze=None):
     if not found:
         return 'waiting'
     item = max(found,key=entry_key)
+    if progress:progress(job,'downloading')
     data = fetch(item['url'])
     if not data.startswith(b'%PDF-') or len(data) > MAX_BYTES:
         raise ValueError('Source response is not an acceptable PDF')
@@ -203,6 +204,11 @@ class Broker:
     def claim(self, job_id):
         return self.call('claim', json={'job_id': job_id, 'run_id': self.run_id})
 
+    def progress(self, job, stage, key=None):
+        if job.get('mode')!='scheduled':return
+        try:self.call('progress',json={'job_id':job['id'],'run_id':self.run_id,'stage':stage,**({'key':key} if key else {})})
+        except Exception:print('Status update unavailable',flush=True)
+
     def deliver(self, job, data, item):
         result = self.call('deliver', data={'job_id': job['id'], 'run_id': self.run_id,
                                           'title': item['title'], 'source_url': item['url'],
@@ -239,9 +245,12 @@ class Broker:
                 if status.get('status')=='needs_image':
                     from summary_card import render_card
                     image=render_card(plan,card['text'])
-                    self.call('card-upload',data={'job_id':job['id'],'run_id':self.run_id,'key':card['key']},
+                    uploaded=self.call('card-upload',data={'job_id':job['id'],'run_id':self.run_id,'key':card['key']},
                               files={'image':('Rosstat_summary.png',image,'image/png')})
+                    if uploaded.get('status')!='completed':raise RuntimeError('Image delivery unconfirmed')
+                elif status.get('status')!='completed':raise RuntimeError('Image delivery unconfirmed')
             except Exception:
+                self.progress(job,'card_error',result['card'].get('key'))
                 print('Summary image unavailable; PDF and text retained',flush=True)
         return result
 
@@ -274,12 +283,14 @@ def poll(job_id, broker, fetch, sleep=time.sleep, clock=time.monotonic, duration
                 if claim['job']['id'] != job_id:
                     raise ValueError('Unexpected job identifier')
                 analysis=(lambda job,found,known:broker.analyze(job,found,known,fetch)) if hasattr(broker,'analyze') else None
-                if check_job(claim['job'], fetch, broker.deliver,analyze=analysis) == 'delivered':
+                progress=getattr(broker,'progress',None)
+                if check_job(claim['job'], fetch, broker.deliver,analyze=analysis,progress=progress) == 'delivered':
                     return 'completed'
                 delay = broker.waiting(job_id)['interval_seconds']
                 if delay > 60:
                     return 'deferred'
         except RetryLater as error:
+            if claimed and hasattr(broker,'progress'):broker.progress(claim['job'],'error')
             delay = error.seconds
             broker.backoff(job_id, delay)
             print('Source requested backoff:', delay, 'seconds', flush=True)
@@ -287,6 +298,7 @@ def poll(job_id, broker, fetch, sleep=time.sleep, clock=time.monotonic, duration
         except Exception as error:
             # Do not print request exceptions, URLs from broker responses, or headers.
             print('Check will retry:', type(error).__name__, flush=True)
+            if claimed and hasattr(broker,'progress'):broker.progress(claim['job'],'error')
             if claimed:
                 try:
                     delay = broker.waiting(job_id)['interval_seconds']

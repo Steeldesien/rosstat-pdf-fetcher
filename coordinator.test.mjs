@@ -71,6 +71,47 @@ function fixture(nowIso='2026-11-18T17:00:00Z') {
   return {coordinator, store, sent, dispatched, advance: ms => {now += ms;}};
 }
 
+test('scheduled progress edits one private message and finishes download before PDF delivery',async()=>{
+  const f=fixture(),events=[];
+  f.coordinator.effects.progress=async(job,stage,previous)=>{events.push(stage);return previous||{messageId:123,chatId:'private-destination'};};
+  f.coordinator.effects.send=async()=>{events.push('pdf');return {message_id:456};};
+  await f.coordinator.tick();const id=f.dispatched[0];await f.coordinator.tick();
+  const claim=await f.coordinator.claim(id,'run');assert.ok(!JSON.stringify(claim).includes('private-destination'));
+  await f.coordinator.progress(id,'run','downloading');await f.coordinator.progress(id,'run','downloading');
+  await f.coordinator.deliver(id,'run',new TextEncoder().encode('%PDF-test'),{title:'Об оценке индекса потребительских цен с 10 по 16 ноября 2026 года',url:'https://rosstat.gov.ru/a.pdf',stamp:Date.parse('2026-11-18T16:00:00Z')/1000});
+  assert.deepEqual(events,['search','downloading','loaded','pdf']);
+});
+test('technical errors reuse status message, waiting is not an error, and next retry restores search',async()=>{
+  const f=fixture(),events=[];f.coordinator.effects.progress=async(job,stage,previous)=>{events.push({stage,id:previous?.messageId||123});return previous||{messageId:123,chatId:'private'};};
+  await f.coordinator.tick();const id=f.dispatched[0];await f.coordinator.claim(id,'run');await f.coordinator.waiting(id,'run');
+  assert.deepEqual(events.map(e=>e.stage),['search']);
+  await assert.rejects(f.coordinator.progress(id,'other','error'));
+  await f.coordinator.progress(id,'run','error');await f.coordinator.release(id,'run');f.advance(61000);await f.coordinator.claim(id,'run2');
+  assert.deepEqual(events.map(e=>e.stage),['search','error','search']);assert.ok(events.every(e=>e.id===123));
+});
+test('an unconfirmed initial status send is not duplicated and cannot block the PDF',async()=>{
+  const f=fixture();let calls=0;f.coordinator.effects.progress=async()=>{calls++;throw Error('lost confirmation');};
+  await f.coordinator.tick();const id=f.dispatched[0];await f.coordinator.claim(id,'run');
+  await f.coordinator.deliver(id,'run',new TextEncoder().encode('%PDF-test'),{title:'Об оценке индекса потребительских цен с 10 по 16 ноября 2026 года',url:'https://rosstat.gov.ru/a.pdf',stamp:Date.parse('2026-11-18T16:00:00Z')/1000});
+  assert.equal(calls,1);assert.equal(f.sent.length,1);
+});
+test('analysis failure replaces the same status after PDF delivery',async()=>{
+  const f=fixture(),events=[];f.coordinator.config.analysisEnabled=true;
+  f.coordinator.effects.progress=async(job,stage,previous)=>{events.push(stage);return previous||{messageId:123,chatId:'private'};};
+  await f.coordinator.tick();const id=f.dispatched[0];await f.coordinator.claim(id,'run');
+  await f.coordinator.deliver(id,'run',new TextEncoder().encode('%PDF-test'),{title:'Об оценке индекса потребительских цен с 10 по 16 ноября 2026 года',url:'https://rosstat.gov.ru/a.pdf',stamp:Date.parse('2026-11-18T16:00:00Z')/1000});
+  await f.coordinator.finishAnalysis(id,'run','failed');assert.equal(events.at(-1),'analysis_error');
+});
+test('only the completed matching analysis can report an image failure',async()=>{
+  const f=fixture(),events=[];f.coordinator.config.analysisEnabled=true;
+  f.coordinator.effects.progress=async(job,stage,previous)=>{events.push(stage);return previous||{messageId:123,chatId:'private'};};
+  await f.coordinator.tick();const id=f.dispatched[0];await f.coordinator.claim(id,'run');
+  await f.coordinator.deliver(id,'run',new TextEncoder().encode('%PDF-test'),{title:'Об оценке индекса потребительских цен с 10 по 16 ноября 2026 года',url:'https://rosstat.gov.ru/a.pdf',stamp:Date.parse('2026-11-18T16:00:00Z')/1000});
+  await f.coordinator.finishAnalysis(id,'run','generated','a'.repeat(64));
+  await assert.rejects(f.coordinator.progress(id,'run','card_error','b'.repeat(64)));
+  await f.coordinator.progress(id,'run','card_error','a'.repeat(64));assert.equal(events.at(-1),'card_error');
+});
+
 test('late automatic release stays pending after midnight and keeps the same job', async () => {
   const f=fixture(); await f.coordinator.tick();
   const first=f.dispatched[0];

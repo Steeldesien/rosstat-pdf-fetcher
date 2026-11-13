@@ -27,10 +27,35 @@ jobs:
       - name: Downloader tests
         run: python -m unittest discover -v
       - name: Coordinator tests
-        run: node --test coordinator.test.mjs analysis.test.mjs workers-ai.test.mjs workers-facts.test.mjs workers-weekly.test.mjs agy-auth.test.mjs
+        run: node --test coordinator.test.mjs analysis.test.mjs workers-ai.test.mjs workers-facts.test.mjs workers-weekly.test.mjs status-messages.test.mjs agy-auth.test.mjs
       - name: Download and relay PDF
         env:
           JOB_ID: ${{ inputs.job_id }}
           BROKER_URL: ${{ secrets.BROKER_URL }}
           BROKER_TOKEN: ${{ secrets.BROKER_TOKEN }}
         run: python -u runner.py
+      - name: Report unexpected workflow failure
+        if: failure()
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          BROKER_URL: ${{ secrets.BROKER_URL }}
+          BROKER_TOKEN: ${{ secrets.BROKER_TOKEN }}
+        shell: python
+        run: |
+          import json, os, urllib.request
+          job = os.environ['JOB_ID']
+          owner = os.environ['GITHUB_RUN_ID'] + '-' + os.environ.get('GITHUB_RUN_ATTEMPT', '1')
+          def call(operation, **extra):
+              payload = json.dumps({'job_id':job,'run_id':owner,**extra}).encode()
+              request = urllib.request.Request(os.environ['BROKER_URL'].rstrip('/')+'/runner/'+operation,
+                  data=payload, headers={'Authorization':'Bearer '+os.environ['BROKER_TOKEN'],'Content-Type':'application/json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          try:
+              try:
+                  call('progress',stage='error')
+              except Exception:
+                  if call('claim').get('status')=='ready':
+                      call('progress',stage='error')
+          except Exception:
+              print('Private failure status unavailable; coordinator retains retry state.')

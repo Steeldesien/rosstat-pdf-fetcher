@@ -20,6 +20,16 @@ class DeliveryBehavior(unittest.TestCase):
         except ModuleNotFoundError:
             self.fail('The public downloader has not been implemented yet')
 
+    def test_status_changes_to_download_after_match_before_fetch(self):
+        job={'id':'scheduled','kind':'inflation','mode':'scheduled','not_before':'2026-11-11T00:00:00+05:00'}
+        body=rss((TITLE,SOURCE,'Wed, 11 Nov 2026 19:00:00 +0300'))
+        events=[]
+        def fetch(url):
+            if url==self.module.RSS:return body
+            events.append('fetch-pdf');return b'%PDF-real'
+        self.module.check_job(job,fetch,lambda *a:events.append('send-pdf'),progress=lambda job,stage:events.append(stage))
+        self.assertEqual(events,['downloading','fetch-pdf','send-pdf'])
+
     def test_analysis_runs_after_pdf_delivery_with_current_bytes_reused(self):
         job={'id':'analysis-job','kind':'inflation','mode':'latest','analysis_mode':'release'}
         body=rss((TITLE,SOURCE,'Wed, 11 Nov 2026 19:00:00 +0300'))

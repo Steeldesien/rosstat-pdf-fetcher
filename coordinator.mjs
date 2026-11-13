@@ -238,10 +238,11 @@ export class Coordinator {
         if (!['queued','running'].includes(job.phase) || (job.retryUntil||0)>now || (job.leaseUntil||0)>now) continue;
         // A dispatched but not-yet-started workflow gets 10 minutes to enter the queue.
         if (job.lastDispatch && now-job.lastDispatch<600000) continue;
+        if(!job.pdfDelivered)await this.updateProgress(state,job,'search');
         job.lastDispatch=now;
         await this.save(state);
         try { await this.effects.dispatch(job.id); }
-        catch { job.lastDispatch=now-540000; await this.save(state); }
+        catch { job.lastDispatch=now-540000; await this.save(state);await this.updateProgress(state,job,'error'); }
       }
       return {ok:true};
     });
@@ -262,6 +263,7 @@ export class Coordinator {
       }
       job.owner=owner; job.leaseUntil=now+180000; job.phase='running';job.lastCheck=now;
       await this.save(state);
+      if(!job.pdfDelivered)await this.updateProgress(state,job,'search');
       const publicJob={id:job.id,kind:job.kind,mode:job.mode};
       if (job.analysisMode) publicJob.analysis_mode=job.analysisMode;
       if (job.mode==='scheduled') publicJob.not_before=job.not_before;
@@ -279,6 +281,32 @@ export class Coordinator {
       job.leaseUntil=0;
       await this.save(state);
       return {ok:true};
+    });
+  }
+
+  async updateProgress(state,job,stage) {
+    if(job.mode!=='scheduled'||!this.effects.progress||job.progressStage===stage)return;
+    // An unknown initial send outcome must never create duplicate status messages.
+    if(job.progressUncertain&&!job.progressMessage)return;
+    if(!job.progressMessage){job.progressUncertain=true;await this.save(state);}
+    try{
+      const receipt=await this.effects.progress(job,stage,job.progressMessage||null);
+      if(!receipt?.messageId)throw Error('Status message not confirmed');
+      job.progressMessage=receipt;job.progressStage=stage;job.progressUncertain=false;job.progressError=false;
+    }catch{job.progressError=true;job.progressUncertain=!job.progressMessage;}
+    await this.save(state);
+  }
+
+  async progress(id,owner,stage,key=null) {
+    return this.serial(async()=>{
+      const state=await this.state(),job=state.jobs[id];
+      if(!job||job.owner!==owner||!['downloading','error','card_error'].includes(stage))throw Error('Invalid progress lease');
+      if(stage==='card_error'){
+        if(job.phase!=='completed'||!job.pdfDelivered||!job.analysisKey||job.analysisKey!==key)throw Error('Invalid card progress');
+        await this.updateProgress(state,job,stage);return {ok:true};
+      }
+      if(job.pdfDelivered||job.phase!=='running')return {ok:true};
+      await this.updateProgress(state,job,stage);return {ok:true};
     });
   }
 
@@ -319,6 +347,8 @@ export class Coordinator {
       if (job.report_end) {
         if (reportEnd(item.title)!==job.report_end) throw new Error('Wrong reporting period');
       } else if (job.mode==='scheduled' && (!Number.isFinite(item.stamp) || item.stamp*1000<Date.parse(job.not_before))) throw new Error('Stale release');
+      await this.updateProgress(state,job,'downloading');
+      await this.updateProgress(state,job,'loaded');
       job.phase='sending'; await this.save(state);
       try {
         const result=await this.effects.send(bytes,item,job.mode);
@@ -334,6 +364,7 @@ export class Coordinator {
       } catch (error) {
         // A lost Telegram response is ambiguous. Do not silently send duplicates.
         job.phase='needs_review'; await this.save(state);
+        await this.updateProgress(state,job,'error');
         throw new Error('Telegram confirmation missing');
       }
     });
@@ -344,7 +375,7 @@ export class Coordinator {
       const state=await this.state(),job=state.jobs[id];
       if (!job || job.owner!==owner || !job.analysisMode || !job.pdfDelivered || job.phase!=='running') throw Error('Invalid analysis lease');
       job.leaseUntil=this.effects.now()+300000;await this.save(state);
-      return {kind:job.kind,mode:job.analysisMode};
+      return {kind:job.kind,mode:job.analysisMode,scheduled:job.mode==='scheduled'};
     });
   }
 
@@ -355,7 +386,8 @@ export class Coordinator {
       job.phase='completed';job.analysisStatus=String(status).slice(0,60);
       if (analysisKey && /^[a-f0-9]{64}$/.test(analysisKey)) job.analysisKey=analysisKey;
       await this.save(state);
-      return {status:'completed'};
+      if(['failed','delivery_uncertain'].includes(status))await this.updateProgress(state,job,'analysis_error');
+      return {status:'completed',progressUpdated:job.progressStage==='analysis_error'};
     });
   }
 
