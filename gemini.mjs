@@ -27,6 +27,32 @@ export function validatePlan(plan,selection) {
 const normalize=value=>String(value).replace(/[−–]/g,'-').replace(/\s+/g,' ').trim()
   .replace(/(?<=\p{L})\s+(?=\p{L})/gu,'')
   .replace(/\s+(?=[%.,;:!?)\]])|(?<=[(\[+\-])\s+/g,'');
+
+export function compactAnalysis(text,limit=3300) {
+  const blocks=text.split('\n\n'),head=blocks[0]||'',summary=blocks[1]||'';
+  const section=name=>blocks.find(b=>b.startsWith(name+'\n'))?.split('\n').slice(1)||[];
+  const metrics=section('Основные показатели').filter(v=>v.startsWith('• '));
+  metrics.sort((a,b)=>Number(b.match(/\[(\d+),/)?.[1]||0)-Number(a.match(/\[(\d+),/)?.[1]||0));
+  const changes=section('Динамика').filter(v=>v.startsWith('• '));
+  const caveats=section('Ограничения').filter(v=>v.startsWith('• '));
+  const sources=section('Источники'),links=[];
+  for (let i=0;i<sources.length-1;i++) {
+    const number=sources[i].match(/^\[(\d+)\]/)?.[1];
+    if (number&&sources[i+1].startsWith('https://')) links.push(`[${number}] ${sources[i+1]}`);
+  }
+  const clip=(value,max)=>value.length<=max?value:value.slice(0,max-1).replace(/\s+\S*$/,'')+'…';
+  let metricCount=4,changeCount=3,summaryLimit=600;
+  const assemble=()=>[head,clip(summary,summaryLimit),
+    metrics.length?'Ключевые цифры\n'+metrics.slice(0,metricCount).join('\n'):'',
+    changes.length?'Что изменилось\n'+changes.slice(0,changeCount).map(v=>clip(v,950)).join('\n'):'',
+    caveats.length?'Ограничение\n'+clip(caveats[0],240):'',
+    links.length?'Источники\n'+links.join('\n'):''].filter(Boolean).join('\n\n');
+  let result=assemble();
+  while(result.length>limit&&changeCount>1){changeCount--;result=assemble();}
+  while(result.length>limit&&metricCount>2){metricCount--;result=assemble();}
+  if(result.length>limit){summaryLimit=300;result=assemble();}
+  return clip(result,limit);
+}
 export function renderAnalysis(plan,result) {
   if (!result || typeof result.summary!=='string' || !Array.isArray(result.metrics) || !result.metrics.length || result.metrics.length>12 ||
       !Array.isArray(result.changes) || !Array.isArray(result.caveats)) throw Error('Malformed analysis result');
@@ -56,7 +82,7 @@ summary: 2-3 предложения об основных результатах
 changes: до 6 коротких пунктов о динамике со ссылками [номер документа, стр. N]. Сравнивай одинаковые показатели с одинаковой базой, единицами и методологией. Укажи предыдущий и новый уровень. Если вычисление не предоставлено кодом, не выдумывай разницу: покажи оба уровня словами. Отличай проценты от процентных пунктов, уровни от темпов, годовой темп от месячного и недельного.
 Накопленные с начала года показатели НЕ суммируй между выпусками. Недельную инфляцию НЕ выдавай за официальный месячный ИПЦ и не суммируй механически. Разную длину недель отметь. ВВП: не смешивай использование, производство и предварительную оценку. Причинные объяснения и вклады допустимы только если прямо указаны в источнике; иначе причины не установлены.
 Режим release: анализируй один выпуск и сравнения, которые уже есть в нём. Другие режимы: используй ВСЕ selected-выпуски диапазона, baseline только как базу сравнения. Нельзя выдавать анализ одного последнего PDF за весь диапазон.
-caveats: реальные ограничения, несопоставимость, пересмотры данных. Не более 700 слов всего. Ответ строго JSON указанной схемы.`;
+caveats: реальные ограничения, несопоставимость, пересмотры данных. Разбор КРАТКИЙ и информативный: summary 1-2 предложения; metrics не более 4, в первую очередь по самому последнему выпуску; changes 2-3 пункта по одному предложению, показывай начало и конец динамики вместо перечисления всех недель подряд; caveats один главный пункт. Не более 220 слов всего. Не используй неподтверждённые причинные формулировки «за счёт», «обусловлено», «вклад». Ответ строго JSON указанной схемы.`;
   const parts=[{text:prompt}];
   for (const [i,d] of plan.documents.entries()) {
     parts.push({text:`Документ ${i+1}: ${d.title}; роль ${d.role}; охват самого PDF ${d.period_start} - ${d.period_end}.\n`+d.pages.map(p=>`Страница ${p.page}:\n${p.text}`).join('\n')});

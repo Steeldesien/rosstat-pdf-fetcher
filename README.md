@@ -34,6 +34,8 @@ The application cache resides in private Durable Object storage. A key includes 
 
 Analysis checks: `node --test coordinator.test.mjs analysis.test.mjs` and `python -m unittest discover -v`.
 
+Telegram delivery uses a concise view of each stored analysis: a short conclusion, up to four key figures prioritising the newest release, two or three changes and one main limitation. The body is bounded to 3,300 characters so the timestamp footer fits in the same Telegram message. Older stored analyses are compacted locally without another model request. The webhook must subscribe to both `message` and `callback_query` updates for inline buttons to work.
+
 ## Manual report menu
 
 `/inflation` weekly inflation, `/cpi` monthly CPI, `/gdp` GDP, `/fuel` weekly oil-product prices, `/gasoline` monthly gasoline prices, `/industry` industrial production, `/ppi` producer prices, `/finance` company financial results, `/business` business activity, `/wages` wage arrears. The old `/latest` remains an alias for weekly inflation and is omitted from the menu.

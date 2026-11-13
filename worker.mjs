@@ -1,7 +1,7 @@
 import {DurableObject} from 'cloudflare:workers';
 import {Coordinator, commandMode, connectionTarget, documentName, deliveryCaption, REPORTS, analysisModes, ANALYSIS_LABELS} from './coordinator.mjs';
 import {AnalysisCache} from './analysis-cache.mjs';
-import {generateAnalysis,validatePlan,renderAnalysis} from './gemini.mjs';
+import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis} from './gemini.mjs';
 
 async function github(env, path, options={}) {
   if (!env.GITHUB_TOKEN) throw new Error('Dispatch credential is not configured');
@@ -83,7 +83,7 @@ export class CoordinatorObject extends DurableObject {
       validatePlan(plan,selection);
       try {
         const result=await this.analyses.get(plan);
-        text=result.text+`\n\n${result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
+        text=compactAnalysis(result.text)+`\n\n${result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
         status=result.cached?'cached':'generated';
       } catch {
         text='PDF доставлен. Анализ сейчас недоступен: провайдер отказал в запросе, исчерпана квота либо ответ не удалось проверить. Подтверждённые результаты сохраняются; запросы с неопределённым исходом автоматически не повторяются.';
@@ -95,7 +95,7 @@ export class CoordinatorObject extends DurableObject {
       await this.storage.put(deliveryKey,{status:'sending',at:Date.now()});
       const destination=await this.coordinator.destination()||{chatId:this.env.TELEGRAM_CHAT_ID};
       try {
-        const chunks=text.match(/[\s\S]{1,3500}/gu)||[];
+        const chunks=[text];
         for (const chunk of chunks) await telegram(this.env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
           chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{}),text:chunk,link_preview_options:{is_disabled:true}})});
         await this.storage.put(deliveryKey,{status:'sent',at:Date.now()});

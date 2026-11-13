@@ -76,6 +76,19 @@ test('normalization must not merge separate numeric table cells',async()=>{
   assert.throws(()=>renderAnalysis(p,{summary:'x',metrics:[{label:'x',value:'123',document:1,page:1,evidence:'Показатель 123'}],changes:[],caveats:[]}));
 });
 
+test('brief delivery fits one Telegram message and prioritizes latest-release metrics',async()=>{
+  const g=await import('./gemini.mjs');assert.equal(typeof g.compactAnalysis,'function');
+  const original='Недельная инфляция\nПоследний месяц: 01.10.2026-09.11.2026\nВыпусков: 5\n\nГлавный итог.\n\nОсновные показатели\n'+
+    Array.from({length:7},(_,i)=>`• Показатель ${i+1}: ${100+i}% [${i+1}, стр. 1]`).join('\n')+
+    '\n\nДинамика\n'+Array.from({length:6},()=> '• '+ 'Проверенное изменение. '.repeat(20)).join('\n')+
+    '\n\nОграничения\n• Недельная оценка не является месячным ИПЦ.\n\nИсточники\n[7] Последний выпуск\nhttps://rosstat.gov.ru/new.pdf';
+  const brief=g.compactAnalysis(original);
+  assert.ok(brief.length<=3300);assert.ok(brief.includes('Показатель 7'));
+  assert.ok(!brief.includes('Показатель 1:'));
+  assert.ok(brief.includes('https://rosstat.gov.ru/new.pdf'));
+  assert.ok(original.includes('Показатель 1:'));
+});
+
 test('private review cannot replace a ready result or repeat its inference',async()=>{
   const f=fixture(),cache=new api.AnalysisCache(f.store,f.generate);await cache.get(plan());
   await assert.rejects(cache.review(plan(),'retry-failed'));
