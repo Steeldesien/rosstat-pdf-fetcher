@@ -1,0 +1,39 @@
+name: Antigravity cloud capability probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Install official Antigravity CLI
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location https://antigravity.google/cli/install.sh --output "$RUNNER_TEMP/agy-install.sh"
+          bash "$RUNNER_TEMP/agy-install.sh" --dir "$RUNNER_TEMP/agy-bin"
+      - name: Check unattended startup without API credentials
+        shell: python
+        run: |
+          import json, os, pathlib, shutil, subprocess, tempfile
+          binary = str(pathlib.Path(os.environ['RUNNER_TEMP']) / 'agy-bin' / 'agy')
+          version = subprocess.run([binary, '--version'], capture_output=True, text=True, timeout=30)
+          print('CLI version:', version.stdout.strip())
+          report = {'cloud_os': 'linux', 'api_credentials_provided': False,
+                    'dbus_available': bool(shutil.which('dbus-run-session')),
+                    'keyring_daemon_available': bool(shutil.which('gnome-keyring-daemon')),
+                    'keyring_cli_available': bool(shutil.which('secret-tool'))}
+          with tempfile.TemporaryDirectory() as workspace:
+              try:
+                  result = subprocess.run([binary, '-p', 'Return exactly CLOUD_PROBE_OK. Do not use tools.',
+                                           '--output-format', 'json', '--print-timeout', '30s'],
+                                          cwd=workspace, capture_output=True, text=True, timeout=45)
+                  diagnostics = (result.stdout + '\n' + result.stderr).lower()
+                  report.update({'exit_code': result.returncode,
+                                 'requires_authentication': any(s in diagnostics for s in ['authentication required', 'not authenticated', 'sign in', 'sign-in', 'login', 'credentials']),
+                                 'provider_result_received': 'cloud_probe_ok' in result.stdout.lower()})
+              except subprocess.TimeoutExpired:
+                  report.update({'timed_out': True, 'provider_result_received': False})
+          # Raw CLI output is intentionally not logged: it may contain a login URL.
+          print(json.dumps(report, sort_keys=True))
