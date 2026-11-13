@@ -8,6 +8,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install official Antigravity CLI
         shell: bash
         run: |
@@ -45,3 +48,7 @@ jobs:
                   if path.is_file() and not path.is_symlink():
                       inventory.append({'path':str(path.relative_to(home)), 'bytes':path.stat().st_size})
           print('Unauthenticated config inventory:',json.dumps(inventory[:100]))
+      - name: Reproduce profile packaging without credentials
+        run: |
+          python -m pip install requests cryptography
+          python -c "from pathlib import Path; from agy_cloud_auth import settings,seal; settings(Path.home()); profile,n=seal(Path.home(),'FAKE_TEST_SECRET'); print('Packaged files:',n,'encrypted bytes:',len(profile['ciphertext']))"
