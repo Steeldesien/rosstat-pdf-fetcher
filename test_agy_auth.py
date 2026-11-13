@@ -11,6 +11,12 @@ except ImportError:
 
 
 class AuthTests(unittest.TestCase):
+    def test_gemini_login_explicitly_requests_interactive_mode(self):
+        self.assertIsNotNone(a)
+        command=a.login_command('gemini-cli','gemini')
+        self.assertIn('--prompt-interactive',command)
+        self.assertNotIn('--prompt',command)
+
     def test_gemini_cli_settings_and_auth_completion(self):
         self.assertIsNotNone(a)
         with tempfile.TemporaryDirectory() as directory:

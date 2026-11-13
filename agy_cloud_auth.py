@@ -112,6 +112,12 @@ def credentials_ready(home,provider):
     except (OSError,ValueError):return False
 
 
+def login_command(provider,binary):
+    if provider=='gemini-cli':
+        return [binary,'--prompt-interactive','Reply READY. Do not use tools or read files.']
+    return [binary,'acp','--login','--disable-telemetry']
+
+
 def main():
     import pty
     import fcntl
@@ -149,7 +155,7 @@ def main():
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 10000, 0, 0))
             # Keyring fallback in a genuinely headless runner; do not borrow PC credentials.
             workspace=tempfile.TemporaryDirectory()
-            command=[binary] if provider=='gemini-cli' else [binary,'acp','--login','--disable-telemetry']
+            command=login_command(provider,binary)
             proc = subprocess.Popen(command,stdin=slave,stdout=slave,stderr=slave,env=env,cwd=workspace.name,start_new_session=True)
             os.close(slave)
             raw, published, sent = '', False, False
