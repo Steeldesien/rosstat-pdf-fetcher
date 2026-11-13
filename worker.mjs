@@ -45,6 +45,7 @@ export class CoordinatorObject extends DurableObject {
   }
   async invoke(method,args=[]) {
     if (method==='analyzeJob') return this.analyzeJob(...args);
+    if (method==='sendAnalysisCard') return this.sendAnalysisCard(...args);
     if (method==='sourceArchive') {
       const [id,owner,documents]=args,selection=await this.coordinator.analysisAccess(id,owner);
       return this.coordinator.serial(async()=>{
@@ -71,13 +72,17 @@ export class CoordinatorObject extends DurableObject {
       const [plan,action]=args;validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.analyses.review(plan,action,renderAnalysis);
     }
     if (method==='analysisStatus') return {enabled:this.env.ANALYSIS_ENABLED==='true',keyConfigured:!!this.env.GEMINI_API_KEY,model:this.env.GEMINI_MODEL||null};
+    if (method==='cardSummary') {
+      const cache=await this.storage.list({prefix:'summary-card:neutral-v1:'}),deliveries=await this.storage.list({prefix:'summary-card-delivery:'});
+      return {cachedImages:cache.size,sent:[...deliveries.values()].filter(v=>v.status==='sent').length,reused:[...deliveries.values()].filter(v=>v.status==='sent'&&v.cached).length};
+    }
     if (!['manual','tick','claim','deliver','backoff','waiting','release','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
     return this.coordinator[method](...args);
   }
 
   async analyzeJob(id,owner,plan,reason=null) {
     const selection=await this.coordinator.analysisAccess(id,owner);
-    let text,status='failed';
+    let text,status='failed',card=null;
     if (reason==='incomplete_archive') text='PDF доставлен. Для выбранного периода не удалось собрать полный набор выпусков с распознаваемыми датами. Анализ не запускался. Можно выбрать «Последний выпуск».';
     else {
       validatePlan(plan,selection);
@@ -85,6 +90,7 @@ export class CoordinatorObject extends DurableObject {
         const result=await this.analyses.get(plan);
         text=compactAnalysis(result.text)+`\n\n${result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
         status=result.cached?'cached':'generated';
+        card={key:result.key,text:compactAnalysis(result.text)};
       } catch {
         text='PDF доставлен. Анализ сейчас недоступен: провайдер отказал в запросе, исчерпана квота либо ответ не удалось проверить. Подтверждённые результаты сохраняются; запросы с неопределённым исходом автоматически не повторяются.';
       }
@@ -103,7 +109,39 @@ export class CoordinatorObject extends DurableObject {
         await this.storage.put(deliveryKey,{status:'uncertain',at:Date.now()});status='delivery_uncertain';
       }
     }
-    return this.coordinator.finishAnalysis(id,owner,status);
+    const finished=await this.coordinator.finishAnalysis(id,owner,status,card?.key);
+    return {...finished,...(card?{card}:{})};
+  }
+
+  async sendAnalysisCard(id,owner,key,bytes=null) {
+    await this.coordinator.cardAccess(id,owner,key);
+    const cacheKey='summary-card:neutral-v1:'+key,deliveryKey='summary-card-delivery:'+id;
+    return this.coordinator.serial(async()=>{
+      if (await this.storage.get(deliveryKey)) return {status:'completed'};
+      const cached=await this.storage.get(cacheKey);
+      if (!cached&&!bytes) return {status:'needs_image'};
+      if (!cached&&(bytes.length>2*1024*1024||!bytes.slice(0,8).every((v,i)=>v===[137,80,78,71,13,10,26,10][i]))) throw Error('Invalid summary PNG');
+      const destination=await this.coordinator.destination()||{chatId:this.env.TELEGRAM_CHAT_ID};
+      await this.storage.put(deliveryKey,{status:'sending',at:Date.now()});
+      try {
+        let result;
+        if (cached) result=await telegram(this.env,'sendPhoto',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
+          chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{}),photo:cached.fileId})});
+        else {
+          const form=new FormData();form.append('chat_id',destination.chatId);
+          if(destination.threadId)form.append('message_thread_id',String(destination.threadId));
+          form.append('photo',new Blob([bytes],{type:'image/png'}),'Rosstat_summary.png');
+          result=await telegram(this.env,'sendPhoto',{body:form});
+        }
+        const fileId=result.photo?.at(-1)?.file_id;
+        if(fileId)await this.storage.put(cacheKey,{fileId,createdAt:Date.now()});
+        await this.storage.put(deliveryKey,{status:'sent',at:Date.now(),cached:!!cached,messageId:result.message_id});
+        return {status:'completed'};
+      } catch {
+        await this.storage.put(deliveryKey,{status:'uncertain',at:Date.now()});
+        return {status:'delivery_uncertain'};
+      }
+    });
   }
 }
 
@@ -181,6 +219,7 @@ export default {
       if (admin) {
         if (path==='/admin/summary' && request.method==='GET') return reply(await object.invoke('summary'));
         if (path==='/admin/analysis-status' && request.method==='GET') return reply(await object.invoke('analysisStatus'));
+        if (path==='/admin/card-summary' && request.method==='GET') return reply(await object.invoke('cardSummary'));
         if (request.method!=='POST') return new Response('Method not allowed',{status:405});
         if (path==='/admin/analysis-preview') return reply(await object.invoke('analysisPreview',[await request.json()]));
         if (path==='/admin/analysis-review') {
@@ -200,9 +239,11 @@ export default {
       }
       if (runner && request.method==='POST') {
         if (Number(request.headers.get('Content-Length')||0)>25*1024*1024+65536) return new Response('Too large',{status:413});
-        const form=path==='/runner/deliver' ? await request.formData() : null;
+        const form=['/runner/deliver','/runner/card-upload'].includes(path) ? await request.formData() : null;
         const data=form ? Object.fromEntries(form) : await request.json();
         if (!validId(data.job_id) || !validId(data.run_id)) return new Response('Invalid request',{status:400});
+        if(path==='/runner/card')return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key]));
+        if(path==='/runner/card-upload'&&data.image instanceof File)return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key,new Uint8Array(await data.image.arrayBuffer())]));
         if (path==='/runner/claim') return reply(await object.invoke('claim',[data.job_id,data.run_id]));
         if (path==='/runner/release') return reply(await object.invoke('release',[data.job_id,data.run_id]));
         if (path==='/runner/backoff') return reply(await object.invoke('backoff',[data.job_id,data.run_id,data.seconds]));

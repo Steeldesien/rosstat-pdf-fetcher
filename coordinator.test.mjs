@@ -41,6 +41,18 @@ test('PDF is delivered once while analysis remains recoverable after runner rest
   assert.equal((await f.coordinator.claim(job.id,'another')).status,'completed');
 });
 
+test('only the matching completed analysis runner can attach a summary image',async()=>{
+  const f=fixture(),job=await f.coordinator.manual(777,'inflation','release');
+  await f.coordinator.claim(job.id,'runner');
+  await f.coordinator.deliver(job.id,'runner',new TextEncoder().encode('%PDF-test'),{title:'t',url:'https://rosstat.gov.ru/a',stamp:1});
+  assert.equal(typeof f.coordinator.cardAccess,'function');
+  await assert.rejects(f.coordinator.cardAccess(job.id,'runner','a'.repeat(64)));
+  await f.coordinator.finishAnalysis(job.id,'runner','cached','a'.repeat(64));
+  await assert.rejects(f.coordinator.cardAccess(job.id,'other','a'.repeat(64)));
+  await assert.rejects(f.coordinator.cardAccess(job.id,'runner','b'.repeat(64)));
+  assert.equal((await f.coordinator.cardAccess(job.id,'runner','a'.repeat(64))).kind,'inflation');
+});
+
 function fixture(nowIso='2026-11-18T17:00:00Z') {
   const data = new Map();
   const store = {

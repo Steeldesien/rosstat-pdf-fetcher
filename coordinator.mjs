@@ -348,13 +348,21 @@ export class Coordinator {
     });
   }
 
-  async finishAnalysis(id,owner,status) {
+  async finishAnalysis(id,owner,status,analysisKey=null) {
     return this.serial(async()=>{
       const state=await this.state(),job=state.jobs[id];
       if (!job || job.owner!==owner || !job.pdfDelivered || !job.analysisMode) throw Error('Invalid analysis lease');
-      job.phase='completed';job.analysisStatus=String(status).slice(0,60);await this.save(state);
+      job.phase='completed';job.analysisStatus=String(status).slice(0,60);
+      if (analysisKey && /^[a-f0-9]{64}$/.test(analysisKey)) job.analysisKey=analysisKey;
+      await this.save(state);
       return {status:'completed'};
     });
+  }
+
+  async cardAccess(id,owner,key) {
+    const state=await this.state(),job=state.jobs[id];
+    if (!job || job.owner!==owner || job.phase!=='completed' || !job.analysisKey || job.analysisKey!==key) throw Error('Invalid card delivery');
+    return {kind:job.kind,mode:job.analysisMode};
   }
 
   async importCompleted(ids) {

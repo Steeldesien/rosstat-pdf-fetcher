@@ -36,6 +36,10 @@ Analysis checks: `node --test coordinator.test.mjs analysis.test.mjs` and `pytho
 
 Telegram delivery uses a concise view of each stored analysis: a short conclusion, up to four key figures prioritising the newest release, two or three changes and one main limitation. The body is bounded to 3,300 characters so the timestamp footer fits in the same Telegram message. Older stored analyses are compacted locally without another model request. The webhook must subscribe to both `message` and `callback_query` updates for inline buttons to work.
 
+Successful analysis delivery also sends a square PNG card using a burgundy, white and dark grey palette. Python/Pillow and Matplotlib render it on the existing runner without an image-generation service. Inflation charts use the actual PDF's headline indices and comparable commodity table rows, converted to percentage changes with Decimal arithmetic. A single release produces one observed point rather than invented history; range charts identify the baseline separately. Unsupported chart series are explicitly marked as unavailable. The existing concise text is retained.
+
+The private coordinator caches Telegram photo identifiers per analysis and card-template version. Repeated requests reuse the photo without another AI request or image render. Card upload is permitted only to the runner owning the completed matching analysis. A card failure retains the already delivered PDF and text. No PNG artifacts, additional credentials or image-generation quotas are introduced.
+
 ## Manual report menu
 
 `/inflation` weekly inflation, `/cpi` monthly CPI, `/gdp` GDP, `/fuel` weekly oil-product prices, `/gasoline` monthly gasoline prices, `/industry` industrial production, `/ppi` producer prices, `/finance` company financial results, `/business` business activity, `/wages` wage arrears. The old `/latest` remains an alias for weekly inflation and is omitted from the menu.

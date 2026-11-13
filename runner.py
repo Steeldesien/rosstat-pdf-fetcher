@@ -225,7 +225,19 @@ class Broker:
                 'documents':[{k:d[k] for k in ['title','url','period_start','period_end']} for d in plan['documents']]})
         except (IncompleteArchive,ValueError):
             return self.call('analysis-failure',json={'job_id':job['id'],'run_id':self.run_id,'reason':'incomplete_archive'})
-        return self.call('analyze',json={'job_id':job['id'],'run_id':self.run_id,'plan':plan})
+        result=self.call('analyze',json={'job_id':job['id'],'run_id':self.run_id,'plan':plan})
+        if result.get('card'):
+            try:
+                card=result['card']
+                status=self.call('card',json={'job_id':job['id'],'run_id':self.run_id,'key':card['key']})
+                if status.get('status')=='needs_image':
+                    from summary_card import render_card
+                    image=render_card(plan,card['text'])
+                    self.call('card-upload',data={'job_id':job['id'],'run_id':self.run_id,'key':card['key']},
+                              files={'image':('Rosstat_summary.png',image,'image/png')})
+            except Exception:
+                print('Summary image unavailable; PDF and text retained',flush=True)
+        return result
 
     def release(self, job_id):
         self.call('release', json={'job_id': job_id, 'run_id': self.run_id})
