@@ -44,3 +44,9 @@ class AuthTests(unittest.TestCase):
         self.assertIsNotNone(a)
         self.assertEqual(a.login_url('Open https://accounts.google.com/o/oauth2/auth?state=x\r\n'), 'https://accounts.google.com/o/oauth2/auth?state=x')
         self.assertIsNone(a.login_url('https://accounts.google.com.attacker.test/token'))
+
+    def test_diagnostics_do_not_echo_credentials(self):
+        self.assertIsNotNone(a)
+        result=a.diagnostic('login','invalid_grant https://accounts.google.com/?code=PRIVATE_CODE token=PRIVATE_TOKEN',1)
+        self.assertEqual(result['flags'],['invalid_code'])
+        self.assertNotIn('PRIVATE',str(result))

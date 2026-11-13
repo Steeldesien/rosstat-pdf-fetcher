@@ -78,6 +78,21 @@ def login_url(raw):
     return None
 
 
+def diagnostic(stage, raw='', returncode=None):
+    lower=raw.lower()
+    # Fixed flags only: never return arbitrary provider output, URLs or codes.
+    return {'stage':stage,'returncode':returncode,'flags':[name for name,words in {
+        'expired':['expired','timed out','timeout'],
+        'invalid_code':['invalid_grant','invalid code','invalid authorization'],
+        'auth_required':['authentication required','not authenticated'],
+        'quota':['quota','rate limit','resource_exhausted'],
+        'network':['enotfound','econnreset','fetch failed','network error'],
+        'keyring':['keyring','secret service','dbus'],
+        'permission':['permission denied','eacces'],
+        'success_text':['successfully','authenticated','signed in'],
+    }.items() if any(word in lower for word in words)]}
+
+
 def settings(home):
     path = home/'.gemini/antigravity-cli/settings.json'
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,14 +118,17 @@ def main():
             raise RuntimeError('Private auth bridge rejected operation')
         return r.json()
 
+    stage, raw, exit_code = 'claim', '', None
     try:
         claim = call('claim')
         home = Path.home()
         binary = str(Path(os.environ['RUNNER_TEMP'])/'agy-bin/agy')
         if claim['action'] == 'verify':
+            stage='restore'
             restore(home, secret, claim['profile'])
         settings(home)
         if claim['action'] == 'login':
+            stage='login'
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 10000, 0, 0))
             # Keyring fallback in a genuinely headless runner; do not borrow PC credentials.
@@ -140,6 +158,7 @@ def main():
                 if proc.poll() is None:
                     proc.kill()
                 proc.wait(timeout=10)
+                exit_code=proc.returncode
                 if proc.returncode != 0:
                     raise RuntimeError('Cloud CLI login did not complete')
             finally:
@@ -147,18 +166,23 @@ def main():
                     proc.kill()
                 os.close(master)
         settings(home)
+        stage='provider_probe'
         with tempfile.TemporaryDirectory() as workspace:
             result = subprocess.run([binary, '-p', 'Reply exactly CLOUD_SESSION_VERIFIED. Do not use tools or read files.', '--output-format', 'json', '--print-timeout', '90s'], cwd=workspace, capture_output=True, text=True, timeout=110)
         ok = result.returncode == 0 and 'CLOUD_SESSION_VERIFIED' in result.stdout
+        raw=result.stdout+'\n'+result.stderr
+        exit_code=result.returncode
         if not ok:
             raise RuntimeError('Cloud provider verification failed')
         if claim['action'] == 'login':
+            stage='seal_profile'
             profile, files = seal(home, secret)
             call('complete', ok=True, profile=profile, files=files)
         else:
             call('complete', ok=True)
         print(json.dumps({'action':claim['action'], 'ok':True, 'raw_output_logged':False, 'extra_credits_enabled':False}))
     except Exception:
+        print(json.dumps(diagnostic(stage, raw, exit_code)))
         try:
             call('complete', ok=False)
         except Exception:
