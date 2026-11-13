@@ -167,8 +167,9 @@ def main():
                 os.close(master)
         settings(home)
         if claim['action']=='login':
-            stage='checkpoint'
+            stage='checkpoint_seal'
             profile,files=seal(home,secret)
+            stage='checkpoint_upload'
             call('checkpoint',profile=profile,files=files)
         stage='provider_probe'
         with tempfile.TemporaryDirectory() as workspace:
@@ -185,11 +186,11 @@ def main():
         else:
             call('complete', ok=True)
         print(json.dumps({'action':claim['action'], 'ok':True, 'raw_output_logged':False, 'extra_credits_enabled':False}))
-    except Exception:
+    except Exception as error:
         print(json.dumps(diagnostic(stage, raw, exit_code)))
-        if raw and stage=='provider_probe':
-            try:call('diagnostic',profile=encrypt(raw[-50000:].encode(),secret))
-            except Exception:pass
+        private_detail=json.dumps({'stage':stage,'exception_type':type(error).__name__,'exception':str(error),'cli_output':raw[-30000:]})
+        try:call('diagnostic',profile=encrypt(private_detail.encode(),secret))
+        except Exception:pass
         try:
             call('complete', ok=False)
         except Exception:
