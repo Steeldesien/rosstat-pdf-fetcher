@@ -1,5 +1,6 @@
 import {analysisParts,schema,renderAnalysis} from './gemini.mjs';
 import {inflationFacts,factsMessages,factsResult,factsSchema} from './workers-facts.mjs';
+import {weeklyBundle,weeklyMessages,weeklyResult,weeklySchema,normalizeGrowthNarrative} from './workers-weekly.mjs';
 
 export const WORKERS_MODEL='@cf/zai-org/glm-4.7-flash';
 const rates={
@@ -27,8 +28,9 @@ export async function generateWorkersAnalysis(env,plan){
   // Keep the free-only deployment explicit. Never fall back to a paid model.
   if(!rates[model]||!env.AI?.run)throw Object.assign(Error('Workers AI not configured'),{retryable:true});
   const native=model==='@cf/openai/gpt-oss-120b';
-  const facts=env.WORKERS_AI_FACTS==='true'?inflationFacts(plan):null,formatSchema=facts?factsSchema:outputSchema;
-  const body={messages:facts?factsMessages(facts):workersMessages(plan),temperature:0.1,store:false,
+  const rich=env.WORKERS_AI_RICH_WEEKLY==='true'&&plan.kind==='inflation'&&plan.mode==='release'?weeklyBundle(plan):null;
+  const facts=!rich&&env.WORKERS_AI_FACTS==='true'?inflationFacts(plan):null,formatSchema=rich?weeklySchema:facts?factsSchema:outputSchema;
+  const body={messages:rich?weeklyMessages(plan,rich):facts?factsMessages(facts):workersMessages(plan),temperature:0.1,store:false,
     ...(native?{max_tokens:8192,response_format:{type:'json_schema',json_schema:formatSchema}}:
       {max_completion_tokens:facts?4096:8192,response_format:{type:'json_schema',json_schema:{name:'rosstat_analysis',strict:true,schema:formatSchema}},chat_template_kwargs:{enable_thinking:false}})};
   let data;
@@ -42,7 +44,6 @@ export async function generateWorkersAnalysis(env,plan){
   if(choice?choice.finish_reason!=='stop'||typeof choice.message?.content!=='string':!native||!data.response)throw Object.assign(Error('Incomplete Workers AI response'),{review:{model,finishReason:choice?.finish_reason||null,...(usage?{usage}:{})}});
   const content=choice?.message.content??data.response;
   const raw=typeof content==='string'?JSON.parse(content):content;
-  const parsed=facts?factsResult(facts,raw):raw;
-  let text;try{text=renderAnalysis(plan,parsed);}catch(error){error.review={model,output:parsed,...(usage?{usage}:{})};throw error;}
-  return {model,text,...(usage?{usage}:{})};
+  let text;try{const parsed=rich?weeklyResult(plan,rich,raw):facts?factsResult(facts,raw):raw;text=renderAnalysis(plan,parsed);}catch(error){error.review={model,output:raw,validation:error.message,...(usage?{usage}:{})};throw error;}
+  return {model,text:rich?normalizeGrowthNarrative(text):text,...(usage?{usage}:{})};
 }

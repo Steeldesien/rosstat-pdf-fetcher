@@ -1,6 +1,7 @@
 // Durable application cache. Provider prompt caching is not used for deduplication.
 export async function analysisKey(plan) {
   const manifest={version:1,kind:plan.kind,mode:plan.mode,start:plan.start,end:plan.end,
+    ...(plan.analysis_format?{analysis_format:plan.analysis_format}:{}),
     documents:plan.documents.map(d=>[d.period_start,d.period_end,d.role,d.sha256]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))};
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(manifest)));
   return Array.from(new Uint8Array(hash),v=>v.toString(16).padStart(2,'0')).join('');

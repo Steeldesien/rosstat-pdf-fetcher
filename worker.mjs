@@ -3,9 +3,12 @@ import {Coordinator, commandMode, connectionTarget, documentName, deliveryCaptio
 import {AnalysisCache} from './analysis-cache.mjs';
 import {AgyAuth} from './agy-auth.mjs';
 import {generateWorkersAnalysis} from './workers-ai.mjs';
+import {normalizeGrowthNarrative} from './workers-weekly.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
+const richWeekly=(env,plan)=>env.ANALYSIS_PROVIDER==='workers-ai'&&env.WORKERS_AI_RICH_WEEKLY==='true'&&plan.kind==='inflation'&&plan.mode==='release';
+const cachePlan=(env,plan)=>richWeekly(env,plan)?{...plan,analysis_format:'workers-weekly-full-v1'}:plan;
 
 async function github(env, path, options={}) {
   if (!env.GITHUB_TOKEN) throw new Error('Dispatch credential is not configured');
@@ -31,9 +34,14 @@ export class CoordinatorObject extends DurableObject {
     super(ctx,env);
     this.storage=ctx.storage;this.env=env;
     this.agyAuth=new AgyAuth(ctx.storage);
-    this.analyses=new AnalysisCache(ctx.storage,plan=>env.ANALYSIS_PROVIDER==='workers-ai'&&plan.kind==='inflation'?generateWorkersAnalysis(env,plan):generateAnalysis(env,plan));
+    this.analyses=new AnalysisCache(ctx.storage,plan=>{
+      if(richWeekly(env,plan)){const {analysis_format,...sourcePlan}=plan;return this.workersFullAnalyses.get(sourcePlan).then(result=>({...result,text:normalizeGrowthNarrative(result.text)}));}
+      return env.ANALYSIS_PROVIDER==='workers-ai'&&plan.kind==='inflation'?generateWorkersAnalysis(env,plan):generateAnalysis(env,plan);
+    });
     const probeStore={get:key=>ctx.storage.get('workers-ai-facts-v2:'+key),put:(key,value)=>ctx.storage.put('workers-ai-facts-v2:'+key,value)};
     this.workersAnalyses=new AnalysisCache(probeStore,plan=>generateWorkersAnalysis(env,plan));
+    const fullStore={get:key=>ctx.storage.get('workers-full-week-v1:'+key),put:(key,value)=>ctx.storage.put('workers-full-week-v1:'+key,value)};
+    this.workersFullAnalyses=new AnalysisCache(fullStore,plan=>generateWorkersAnalysis({...env,WORKERS_AI_RICH_WEEKLY:'true'},plan));
     this.coordinator=new Coordinator(ctx.storage,{...JSON.parse(env.SCHEDULE_JSON || '{"targets":[]}'),analysisEnabled:analysisAvailable(env)},{
       now:()=>Date.now(),
       dispatch:id=>github(env,'actions/workflows/download.yml/dispatches',{
@@ -58,6 +66,11 @@ export class CoordinatorObject extends DurableObject {
     if(method==='workersReview'){
       const [plan,action]=args;validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.workersAnalyses.review(plan,action,renderAnalysis);
     }
+    if(method==='workersFullPreview'){
+      const [plan,action]=args;validatePlan(plan,{kind:'inflation',mode:'release'});
+      const result=await (action?this.workersFullAnalyses.review(plan,action,renderAnalysis):this.workersFullAnalyses.get(plan));
+      return result?.text?{...result,text:normalizeGrowthNarrative(result.text)}:result;
+    }
     if (method==='analyzeJob') return this.analyzeJob(...args);
     if (method==='sendAnalysisCard') return this.sendAnalysisCard(...args);
     if (method==='sourceArchive') {
@@ -80,10 +93,10 @@ export class CoordinatorObject extends DurableObject {
       });
     }
     if (method==='analysisPreview') {
-      const plan=args[0];validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.analyses.get(plan);
+      const plan=args[0];validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.analyses.get(cachePlan(this.env,plan));
     }
     if (method==='analysisReview') {
-      const [plan,action]=args;validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.analyses.review(plan,action,renderAnalysis);
+      const [plan,action]=args;validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.analyses.review(cachePlan(this.env,plan),action,renderAnalysis);
     }
     if (method==='analysisStatus') return {enabled:analysisAvailable(this.env),keyConfigured:!!this.env.GEMINI_API_KEY,provider:this.env.ANALYSIS_PROVIDER||'gemini',workersBinding:!!this.env.AI,model:this.env.ANALYSIS_PROVIDER==='workers-ai'?this.env.WORKERS_AI_MODEL:this.env.GEMINI_MODEL||null,...(this.env.ANALYSIS_PROVIDER==='workers-ai'?{workersReports:['inflation'],otherReportsProvider:'gemini'}:{})};
     if (method==='cardSummary') {
@@ -101,7 +114,7 @@ export class CoordinatorObject extends DurableObject {
     else {
       validatePlan(plan,selection);
       try {
-        const result=await this.analyses.get(plan);
+        const result=await this.analyses.get(cachePlan(this.env,plan));
         text=compactAnalysis(result.text)+`\n\n${result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
         status=result.cached?'cached':'generated';
         card={key:result.key,text:compactAnalysis(result.text)};
@@ -243,6 +256,7 @@ export default {
         if (path==='/admin/analysis-preview') return reply(await object.invoke('analysisPreview',[await request.json()]));
         if (path==='/admin/workers-ai-preview') return reply(await object.invoke('workersPreview',[await request.json()]));
         if (path==='/admin/workers-ai-review') {const d=await request.json();return reply(await object.invoke('workersReview',[d.plan,d.action]));}
+        if (path==='/admin/workers-ai-full-preview') {const d=await request.json();return reply(await object.invoke('workersFullPreview',[d.plan,d.action||null]));}
         if (path==='/admin/analysis-review') {
           const data=await request.json();return reply(await object.invoke('analysisReview',[data.plan,data.action]));
         }
@@ -285,7 +299,7 @@ export default {
       return new Response('Not found',{status:404});
     } catch (error) {
       console.log('Private coordinator operation failed');
-      if (admin && ['/admin/analysis-preview','/admin/analysis-review','/admin/workers-ai-preview','/admin/workers-ai-review'].includes(path)) return reply({ok:false,providerStatus:error.providerStatus||null,error:error.name==='TimeoutError'?'timeout':error.message?.includes('uncertain')?'uncertain':error.message?.includes('evidence')?'evidence_validation':'analysis_failed',...(error.review?{review:error.review}:{})});
+      if (admin && ['/admin/analysis-preview','/admin/analysis-review','/admin/workers-ai-preview','/admin/workers-ai-review','/admin/workers-ai-full-preview'].includes(path)) return reply({ok:false,providerStatus:error.providerStatus||null,error:error.name==='TimeoutError'?'timeout':error.message?.includes('uncertain')?'uncertain':error.message?.includes('evidence')?'evidence_validation':'analysis_failed',...(error.review?{review:error.review}:{})});
       return new Response('Retry later',{status:503});
     }
   },

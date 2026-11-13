@@ -22,6 +22,9 @@ test('different mode, new release or same-URL correction create distinct analyse
   await cache.get(plan());await cache.get(plan('m1'));await cache.get(plan());await cache.get(plan('release','b'));
   assert.equal(f.calls,3);
 });
+test('an explicitly upgraded analysis format gets a new cache key',async()=>{
+  assert.notEqual(await api.analysisKey(plan()),await api.analysisKey({...plan(),analysis_format:'workers-weekly-full-v1'}));
+});
 test('simultaneous requests share one inference',async()=>{
   assert.equal(typeof api.AnalysisCache,'function');const f=fixture(),cache=new api.AnalysisCache(f.store,f.generate);
   await Promise.all([cache.get(plan()),cache.get(plan()),cache.get(plan())]);assert.equal(f.calls,1);
