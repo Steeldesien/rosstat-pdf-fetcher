@@ -28,3 +28,14 @@ test('a second fresh runner can restore a candidate only in an approved verify s
   await auth.runner(v.id,'fresh','complete',{ok:true});
   assert.equal((await auth.status(v.id)).restorationVerified,true);
 });
+test('successful sign-in checkpoint survives a subsequent provider-probe failure',async()=>{
+  const f=fixture(),auth=new api.AgyAuth(f.store,f.now),s=await auth.start('login');
+  await auth.runner(s.id,'first','claim',{});
+  const profile={nonce:'a'.repeat(16),ciphertext:'b'.repeat(64)};
+  await auth.runner(s.id,'first','checkpoint',{profile,files:2});
+  await auth.runner(s.id,'first','diagnostic',{profile});
+  await auth.runner(s.id,'first','complete',{ok:false});
+  assert.deepEqual(await auth.diagnostic(s.id),profile);
+  const v=await auth.start('verify');
+  assert.deepEqual((await auth.runner(v.id,'fresh','claim',{})).profile,profile);
+});

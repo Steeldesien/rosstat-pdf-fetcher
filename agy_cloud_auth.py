@@ -36,7 +36,7 @@ def seal(home, secret):
         for root in ROOTS:
             for p in sorted((home/root).rglob('*')):
                 rel = p.relative_to(home)
-                if not p.is_file() or p.is_symlink() or EXCLUDE.intersection(rel.parts) or any(part.startswith('.') and part not in {'.gemini', '.config'} for part in rel.parts):
+                if not p.is_file() or p.is_symlink() or EXCLUDE.intersection(rel.parts) or '.git' in rel.parts:
                     continue
                 if p.suffix not in {'.json', '.jsonc', '.toml', '.yaml', '.yml', '.txt', '.db', '.key', '.enc', ''}:
                     continue
@@ -166,6 +166,10 @@ def main():
                     proc.kill()
                 os.close(master)
         settings(home)
+        if claim['action']=='login':
+            stage='checkpoint'
+            profile,files=seal(home,secret)
+            call('checkpoint',profile=profile,files=files)
         stage='provider_probe'
         with tempfile.TemporaryDirectory() as workspace:
             result = subprocess.run([binary, '-p', 'Reply exactly CLOUD_SESSION_VERIFIED. Do not use tools or read files.', '--output-format', 'json', '--print-timeout', '90s'], cwd=workspace, capture_output=True, text=True, timeout=110)
@@ -183,6 +187,9 @@ def main():
         print(json.dumps({'action':claim['action'], 'ok':True, 'raw_output_logged':False, 'extra_credits_enabled':False}))
     except Exception:
         print(json.dumps(diagnostic(stage, raw, exit_code)))
+        if raw and stage=='provider_probe':
+            try:call('diagnostic',profile=encrypt(raw[-50000:].encode(),secret))
+            except Exception:pass
         try:
             call('complete', ok=False)
         except Exception:

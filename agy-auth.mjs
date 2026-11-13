@@ -10,6 +10,11 @@ export class AgyAuth {
   public(s){return {id:s.id,action:s.action,phase:s.phase,expires:s.expires,url:s.url||null,restorationVerified:!!s.restorationVerified,files:s.files||0};}
   async get(id){const s=await this.storage.get('agy:session:'+id);if(!s||s.expires<=this.now())throw Error('Auth session expired');return s;}
   async status(id){return this.public(await this.get(id));}
+  async diagnostic(id){await this.get(id);return await this.storage.get('agy:diagnostic:'+id)||null;}
+  encrypted(p){
+    if(!p||!/^[-_A-Za-z0-9=+/]{16,32}$/.test(p.nonce)||!/^[-_A-Za-z0-9=+/]{32,120000}$/.test(p.ciphertext))throw Error('Invalid encrypted payload');
+    return {nonce:p.nonce,ciphertext:p.ciphertext};
+  }
   async submit(id,code){
     const s=await this.get(id);
     if(s.phase!=='awaiting_code'||typeof code!=='string'||code.length<4||code.length>4096||/[\r\n\x00]/.test(code))throw Error('Invalid authorization code');
@@ -30,11 +35,15 @@ export class AgyAuth {
       if(s.action!=='login'||u.protocol!=='https:'||u.username||u.password||u.port||!['accounts.google.com','antigravity.google','antigravity.google.com'].includes(u.hostname)||data.url.length>16000)throw Error('Invalid login URL');
       s.url=data.url;s.phase='awaiting_code';
     }else if(op==='code'){result={code:s.code||null};delete s.code;
+    }else if(op==='checkpoint'){
+      if(s.action!=='login')throw Error('Invalid checkpoint');
+      await this.storage.put('agy:candidate',this.encrypted(data.profile));s.files=Number(data.files)||0;
+    }else if(op==='diagnostic'){
+      await this.storage.put('agy:diagnostic:'+id,this.encrypted(data.profile));
     }else if(op==='complete'){
       s.phase=data.ok===true?'completed':'failed';delete s.code;delete s.url;
       if(data.ok===true&&s.action==='login'){
-        const p=data.profile;
-        if(!p||!/^[-_A-Za-z0-9=+/]{16,32}$/.test(p.nonce)||!/^[-_A-Za-z0-9=+/]{32,120000}$/.test(p.ciphertext))throw Error('Invalid encrypted profile');
+        const p=this.encrypted(data.profile);
         await this.storage.put('agy:candidate',p);s.files=Number(data.files)||0;
       }
       if(data.ok===true&&s.action==='verify')s.restorationVerified=true;

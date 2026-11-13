@@ -222,7 +222,7 @@ export default {
       if (admin) {
         if(path==='/admin/agy-auth'&&request.method==='POST'){
           const d=await request.json();
-          if(!['start','status','submit'].includes(d.op))return new Response('Invalid request',{status:400});
+          if(!['start','status','submit','diagnostic'].includes(d.op))return new Response('Invalid request',{status:400});
           return reply(await object.invoke('agyAuth',[d.op,...(d.op==='start'?[d.action]:d.op==='submit'?[d.session_id,d.code]:[d.session_id])]));
         }
         if (path==='/admin/summary' && request.method==='GET') return reply(await object.invoke('summary'));
