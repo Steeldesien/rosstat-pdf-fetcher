@@ -95,6 +95,16 @@ test('private review cannot replace a ready result or repeat its inference',asyn
   assert.equal(f.calls,1);
 });
 
+test('official archive tables are accepted without pretending they are PDF files',async()=>{
+  const {validatePlan}=await import('./gemini.mjs');const p=plan('m3');
+  p.documents[0].role='reference';
+  p.documents.push({...doc('b'),format:'table',role:'selected',url:'https://rosstat.gov.ru/storage/mediabank/nedel_Ipc.xlsx'});
+  delete p.documents[1].pdf;
+  assert.doesNotThrow(()=>validatePlan(p,{kind:'inflation',mode:'m3'}));
+  p.documents[1].url='https://attacker.test/data.xlsx';
+  assert.throws(()=>validatePlan(p,{kind:'inflation',mode:'m3'}));
+});
+
 test('a rejected output can be repaired from saved output without another model call',async()=>{
   const f=fixture(),cache=new api.AnalysisCache(f.store,async()=>{throw Object.assign(Error('validation'),{review:{model:'test',output:{text:'Recovered'}}});});
   await assert.rejects(cache.get(plan()));

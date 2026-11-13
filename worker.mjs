@@ -73,7 +73,7 @@ export class CoordinatorObject extends DurableObject {
     }
     if (method==='analysisStatus') return {enabled:this.env.ANALYSIS_ENABLED==='true',keyConfigured:!!this.env.GEMINI_API_KEY,model:this.env.GEMINI_MODEL||null};
     if (method==='cardSummary') {
-      const cache=await this.storage.list({prefix:'summary-card:neutral-v1:'}),deliveries=await this.storage.list({prefix:'summary-card-delivery:'});
+      const cache=await this.storage.list({prefix:'summary-card:'}),deliveries=await this.storage.list({prefix:'summary-card-delivery:'});
       return {cachedImages:cache.size,sent:[...deliveries.values()].filter(v=>v.status==='sent').length,reused:[...deliveries.values()].filter(v=>v.status==='sent'&&v.cached).length};
     }
     if (!['manual','tick','claim','deliver','backoff','waiting','release','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
@@ -114,8 +114,8 @@ export class CoordinatorObject extends DurableObject {
   }
 
   async sendAnalysisCard(id,owner,key,bytes=null) {
-    await this.coordinator.cardAccess(id,owner,key);
-    const cacheKey='summary-card:neutral-v1:'+key,deliveryKey='summary-card-delivery:'+id;
+    const selection=await this.coordinator.cardAccess(id,owner,key);
+    const cacheKey='summary-card:'+(selection.mode==='release'?'neutral-v1:':'range-v2:')+key,deliveryKey='summary-card-delivery:'+id;
     return this.coordinator.serial(async()=>{
       if (await this.storage.get(deliveryKey)) return {status:'completed'};
       const cached=await this.storage.get(cacheKey);

@@ -220,9 +220,15 @@ class Broker:
             found += history
             if job['mode']!='latest' and job['analysis_mode']!='release':
                 found += catalogue_entries(fetch(CATALOGUE),job['kind'])
-            plan=prepare_plan(complete_archive(found,job['kind'],job['analysis_mode'],fetch),fetch,known)
+            try:
+                plan=prepare_plan(complete_archive(found,job['kind'],job['analysis_mode'],fetch,
+                                  max_pages=3 if job['kind']=='inflation' else 86),fetch,known)
+            except IncompleteArchive:
+                if job['kind']!='inflation' or job['analysis_mode']=='release':raise
+                from weekly_history import history_plan
+                plan=history_plan(found,job['analysis_mode'],fetch,known)
             self.call('archive-save',json={'job_id':job['id'],'run_id':self.run_id,
-                'documents':[{k:d[k] for k in ['title','url','period_start','period_end']} for d in plan['documents']]})
+                'documents':[{k:d[k] for k in ['title','url','period_start','period_end']} for d in plan['documents'] if d.get('format')!='table']})
         except (IncompleteArchive,ValueError):
             return self.call('analysis-failure',json={'job_id':job['id'],'run_id':self.run_id,'reason':'incomplete_archive'})
         result=self.call('analyze',json={'job_id':job['id'],'run_id':self.run_id,'plan':plan})

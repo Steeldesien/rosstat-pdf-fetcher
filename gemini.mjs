@@ -11,10 +11,11 @@ export function validatePlan(plan,selection) {
   let bytes=0,characters=0;
   for (const d of plan.documents) {
     const url=new URL(d.url);
+    const table=d.format==='table'&&url.pathname.endsWith('.xlsx')&&!d.pdf;
     if (url.protocol!=='https:' || url.username || url.password || url.port || !(url.hostname==='rosstat.gov.ru'||url.hostname.endsWith('.rosstat.gov.ru')) ||
-        typeof d.title!=='string' || d.title.length>1000 || !/^[a-f0-9]{64}$/.test(d.sha256||'') || !['selected','baseline'].includes(d.role) ||
-        !Array.isArray(d.pages) || !d.pages.length || d.pages.length>100 || typeof d.pdf!=='string' || !d.pdf.startsWith('JVBERi0') || !/^[A-Za-z0-9+/]*={0,2}$/.test(d.pdf)) throw Error('Invalid analysis document');
-    bytes+=d.pdf.length;
+        typeof d.title!=='string' || d.title.length>1000 || !/^[a-f0-9]{64}$/.test(d.sha256||'') || !['selected','baseline','reference'].includes(d.role) ||
+        !Array.isArray(d.pages) || !d.pages.length || d.pages.length>100 || !table&&(typeof d.pdf!=='string' || !d.pdf.startsWith('JVBERi0') || !/^[A-Za-z0-9+/]*={0,2}$/.test(d.pdf))) throw Error('Invalid analysis document');
+    bytes+=(d.pdf||'').length;
     for (let i=0;i<d.pages.length;i++) {
       const p=d.pages[i];
       if (p.page!==i+1||typeof p.text!=='string') throw Error('Invalid page');
@@ -61,13 +62,13 @@ export function renderAnalysis(plan,result) {
     const document=plan.documents[m.document-1],page=document?.pages.find(p=>p.page===m.page);
     if (!page || !normalize(m.evidence) || !normalize(page.text).includes(normalize(m.evidence)) ||
         !normalize(m.evidence).includes(normalize(m.value))) throw Error('Metric evidence could not be verified');
-    const index=/ИПЦ|индекс потребительских цен/i.test(m.label)&&/^\d{2,3},\d+%$/.test(m.value)?Number(m.value.replace('%','').replace(',','.')):null;
+    const index=document.format!=='table'&&/ИПЦ|индекс потребительских цен/i.test(m.label)&&/^\d{2,3},\d+%$/.test(m.value)?Number(m.value.replace('%','').replace(',','.')):null;
     const growth=index!==null&&index>=80&&index<=130?` (изменение цен: ${index>=100?'+':''}${(index-100).toFixed(2).replace('.',',')}%)`:'';
-    lines.push(`• ${m.label}: ${m.value}${growth} [${m.document}, стр. ${m.page}]`);
+    lines.push(`• ${m.label}: ${m.value}${growth} [${m.document}, ${document.format==='table'?'табл.':'стр.'} ${m.page}]`);
   }
   const format=d=>d.split('-').reverse().join('.');
   return `${REPORTS.find(r=>r.kind===plan.kind).label}\n${ANALYSIS_LABELS[plan.mode]}: ${format(plan.start)}-${format(plan.end)}\n`+
-    `Выпусков: ${plan.documents.filter(d=>d.role==='selected').length}\n\n${result.summary}\n\nОсновные показатели\n${lines.join('\n')}`+
+    `${plan.weekly_history?'Недельных наблюдений: '+plan.weekly_history.dates.length:'Выпусков: '+plan.documents.filter(d=>d.role==='selected').length}\n\n${result.summary}\n\nОсновные показатели\n${lines.join('\n')}`+
     (result.changes.length?'\n\nДинамика\n'+result.changes.map(v=>'• '+v).join('\n'):'')+
     (result.caveats.length?'\n\nОграничения\n'+result.caveats.map(v=>'• '+v).join('\n'):'')+
     '\n\nИсточники\n'+plan.documents.map((d,i)=>`[${i+1}] ${d.title}${d.role==='baseline'?' (база сравнения)':''}\n${d.url}`).join('\n');
@@ -84,9 +85,10 @@ changes: до 6 коротких пунктов о динамике со ссы�
 Режим release: анализируй один выпуск и сравнения, которые уже есть в нём. Другие режимы: используй ВСЕ selected-выпуски диапазона, baseline только как базу сравнения. Нельзя выдавать анализ одного последнего PDF за весь диапазон.
 caveats: реальные ограничения, несопоставимость, пересмотры данных. Разбор КРАТКИЙ и информативный: summary 1-2 предложения; metrics не более 4, в первую очередь по самому последнему выпуску; changes 2-3 пункта по одному предложению, показывай начало и конец динамики вместо перечисления всех недель подряд; caveats один главный пункт. Не более 220 слов всего. Не используй неподтверждённые причинные формулировки «за счёт», «обусловлено», «вклад». Ответ строго JSON указанной схемы.`;
   const parts=[{text:prompt}];
+  if(plan.weekly_history)parts.push({text:'Архивный режим: полный набор PDF отсутствует. Для диапазона используй официальный XLSX с недельными индексами ОТДЕЛЬНЫХ товаров и рассчитанными кодом цепными изменениями. '+(plan.weekly_history.aggregate_cpi===null?'Общий ИПЦ за диапазон неизвестен.':'В расчетной таблице есть общая цепная оценка за весь диапазон по двум PDF с общей базой с начала года; укажи этот метод. Отдельных значений общего ИПЦ для каждой промежуточной недели нет.')+' Нельзя считать общий ИПЦ простым средним товаров или подменять последним выпуском. PDF с ролью reference показывает только последнюю неделю. Главный вывод и метрики должны относиться ко всему диапазону из таблицы. Не называй расчет официальной месячной инфляцией.'});
   for (const [i,d] of plan.documents.entries()) {
     parts.push({text:`Документ ${i+1}: ${d.title}; роль ${d.role}; охват самого PDF ${d.period_start} - ${d.period_end}.\n`+d.pages.map(p=>`Страница ${p.page}:\n${p.text}`).join('\n')});
-    parts.push({inlineData:{mimeType:'application/pdf',data:d.pdf}});
+    if(d.pdf)parts.push({inlineData:{mimeType:'application/pdf',data:d.pdf}});
   }
   const response=await request(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{
     method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':env.GEMINI_API_KEY},

@@ -135,9 +135,9 @@ def news_entries(html,kind):
     return [row for row in parser.items if matches(row['title'],kind)]
 
 
-def complete_archive(rows,kind,mode,fetch,sleep=time.sleep):
+def complete_archive(rows,kind,mode,fetch,sleep=time.sleep,max_pages=86):
     rows=list(rows);previous=set()
-    for page in range(1,87):
+    for page in range(1,max_pages+1):
         try:return select_releases(rows,kind,mode)
         except IncompleteArchive:pass
         html=fetch(f'https://rosstat.gov.ru/central-news?print=1&page={page}')

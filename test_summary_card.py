@@ -24,6 +24,27 @@ class SummaryCard(unittest.TestCase):
     def test_single_issue_does_not_invent_historical_points(self):
         self.assertEqual(len(self.api.chart_data(self.plan())['weekly']),1)
 
+    def test_range_kpis_and_commodity_changes_compound_all_selected_weeks(self):
+        p=self.plan();p['mode']='m1';p['start']='2026-10-27'
+        first={'title':'Предыдущая неделя','role':'selected','period_start':'2026-10-27','period_end':'2026-11-02',
+               'pages':[{'page':1,'text':'индекс потребительских цен составил 100,10%, с начала месяца – 100,11%, с начала года – 106,20%.\nОгурцы 102,00 102,00 65,00\nБензин автомобильный 98,00 98,00 116,00'}]}
+        p['documents'][0]['period_start']='2026-11-03'
+        p['documents'].insert(0,first)
+        data=self.api.chart_data(p)
+        self.assertAlmostEqual(data['kpis'][0]['value'],0.22012,places=5)
+        self.assertNotEqual(data['kpis'][0]['label'],'За неделю')
+        self.assertAlmostEqual(dict(data['categories'])['Огурцы'],11.588,places=4)
+        self.assertAlmostEqual(dict(data['categories'])['Бензин'],-2.784,places=4)
+        self.assertAlmostEqual(data['cumulative'][-1]['value'],0.22012,places=5)
+
+    def test_range_does_not_compound_baseline_week_or_partial_commodity_history(self):
+        p=self.plan();p['mode']='m1';p['documents'][0]['period_start']='2026-11-03'
+        baseline={**p['documents'][0],'role':'baseline','period_end':'2026-11-02'}
+        p['documents'].insert(0,baseline)
+        data=self.api.chart_data(p)
+        self.assertAlmostEqual(data['kpis'][0]['value'],0.12,places=5)
+        self.assertEqual(data['cumulative'][0]['value'],0)
+
     def test_png_is_readable_telegram_size_and_has_no_private_metadata(self):
         from PIL import Image
         data=self.api.render_card(self.plan(),'Короткий вывод на русском языке.')
