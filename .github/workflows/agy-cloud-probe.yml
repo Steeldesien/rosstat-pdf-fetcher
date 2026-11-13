@@ -37,3 +37,11 @@ jobs:
                   report.update({'timed_out': True, 'provider_result_received': False})
           # Raw CLI output is intentionally not logged: it may contain a login URL.
           print(json.dumps(report, sort_keys=True))
+          # Fresh unauthenticated runner only: list config file sizes, never contents.
+          home=pathlib.Path.home()
+          inventory=[]
+          for root in ['.gemini', '.config/antigravity']:
+              for path in (home/root).rglob('*'):
+                  if path.is_file() and not path.is_symlink():
+                      inventory.append({'path':str(path.relative_to(home)), 'bytes':path.stat().st_size})
+          print('Unauthenticated config inventory:',json.dumps(inventory[:100]))
