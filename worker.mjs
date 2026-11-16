@@ -5,7 +5,7 @@ import {AgyAuth} from './agy-auth.mjs';
 import {generateWorkersAnalysis} from './workers-ai.mjs';
 import {normalizeGrowthNarrative} from './workers-weekly.mjs';
 import {reportProgress} from './status-messages.mjs';
-import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis} from './gemini.mjs';
+import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
 const richWeekly=(env,plan)=>env.ANALYSIS_PROVIDER==='workers-ai'&&env.WORKERS_AI_RICH_WEEKLY==='true'&&plan.kind==='inflation'&&plan.mode==='release';
@@ -252,6 +252,7 @@ export default {
         return new Response('OK');
       }
       if (admin) {
+        if(path==='/admin/gemini-probe'&&request.method==='POST')return reply(await probeGemini(env));
         if(path==='/admin/agy-auth'&&request.method==='POST'){
           const d=await request.json();
           if(!['start','status','submit','diagnostic'].includes(d.op))return new Response('Invalid request',{status:400});

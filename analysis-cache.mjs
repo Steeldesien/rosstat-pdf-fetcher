@@ -40,7 +40,11 @@ export class AnalysisCache {
     let result;
     try {result=await this.generate(plan);}
     catch(error) {
-      await this.store.put(storageKey,{status:error.retryable?'retryable':'uncertain',failedAt:Date.now(),...(error.review?{review:error.review}:{})});
+      await this.store.put(storageKey,{status:error.retryable?'retryable':'uncertain',failedAt:Date.now(),
+        ...(Number.isInteger(error.providerStatus)?{providerStatus:error.providerStatus}:{}),
+        ...(typeof error.providerReason==='string'&&/^[A-Z_]{1,80}$/.test(error.providerReason)?{providerReason:error.providerReason}:{}),
+        ...(typeof error.classification==='string'&&/^[a-z_]{1,80}$/.test(error.classification)?{classification:error.classification}:{}),
+        ...(error.review?{review:error.review}:{})});
       throw error;
     }
     if (!result || typeof result.text!=='string' || !result.text.trim() || result.text.length>24000) {

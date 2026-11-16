@@ -4,6 +4,27 @@ export const schema={type:'OBJECT',properties:{summary:{type:'STRING'},metrics:{
   label:{type:'STRING'},value:{type:'STRING'},document:{type:'INTEGER'},page:{type:'INTEGER'},evidence:{type:'STRING'}},required:['label','value','document','page','evidence']}},
   changes:{type:'ARRAY',items:{type:'STRING'}},caveats:{type:'ARRAY',items:{type:'STRING'}}},required:['summary','metrics','changes','caveats']};
 
+async function refusal(response){
+  let body;try{body=await response.json?.();}catch{}
+  const message=String(body?.error?.message||'').toLowerCase();
+  const reason=body?.error?.status;
+  const providerReason=typeof reason==='string'&&/^[A-Z_]{1,80}$/.test(reason)?reason:null;
+  const classification=response.status===429?'quota':response.status===404?'model_not_found':
+    /api.?key.*(not valid|invalid|expired)/.test(message)?'invalid_key':
+    /location|country|region/.test(message)?'location_restricted':
+    response.status===403?'permission_denied':response.status>=500?'provider_unavailable':'request_rejected';
+  return {providerStatus:response.status,providerReason,classification};
+}
+
+export async function probeGemini(env,request=fetch){
+  const model=env.GEMINI_MODEL||'gemini-2.5-flash';
+  if(!env.GEMINI_API_KEY)return {ok:false,model,classification:'not_configured'};
+  const response=await request(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{
+    method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':env.GEMINI_API_KEY},
+    body:JSON.stringify({contents:[{role:'user',parts:[{text:'Reply OK.'}]}],generationConfig:{maxOutputTokens:32}}),signal:AbortSignal.timeout(30000)});
+  return response.ok?{ok:true,model,providerStatus:response.status}:{ok:false,model,...await refusal(response)};
+}
+
 export function validatePlan(plan,selection) {
   if (!plan || plan.kind!==selection.kind || plan.mode!==selection.mode || !analysisModes(plan.kind).includes(plan.mode) ||
       !/^\d{4}-\d{2}-\d{2}$/.test(plan.start||'') || !/^\d{4}-\d{2}-\d{2}$/.test(plan.end||'') || plan.start>plan.end ||
@@ -99,7 +120,7 @@ export async function generateAnalysis(env,plan,request=fetch) {
     body:JSON.stringify({contents:[{role:'user',parts}],generationConfig:{temperature:0.1,maxOutputTokens:16384,responseMimeType:'application/json',responseSchema:schema}}),
     signal:AbortSignal.timeout(150000)
   });
-  if (!response.ok) throw Object.assign(Error('Gemini HTTP '+response.status),{retryable:true,providerStatus:response.status});
+  if (!response.ok) throw Object.assign(Error('Gemini HTTP '+response.status),{retryable:true,...await refusal(response)});
   const data=await response.json(),candidate=data.candidates?.[0];
   if (candidate?.finishReason!=='STOP') throw Object.assign(Error('Incomplete AI response'),{review:{model,finishReason:candidate?.finishReason||null,parts:candidate?.content?.parts||[]}});
   const parsed=JSON.parse(candidate.content.parts.filter(p=>p.text&&!p.thought).map(p=>p.text).join(''));

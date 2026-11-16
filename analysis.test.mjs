@@ -39,6 +39,22 @@ test('failed explicit quota response can be retried without caching an error as 
   await assert.rejects(cache.get(plan()));
   assert.equal((await new api.AnalysisCache(f.store,f.generate).get(plan())).cached,false);
 });
+test('private cache preserves safe provider refusal diagnostics without request secrets',async()=>{
+  const f=fixture(),cache=new api.AnalysisCache(f.store,async()=>{throw Object.assign(Error('sensitive original body'),{retryable:true,providerStatus:429,providerReason:'RESOURCE_EXHAUSTED',classification:'quota'});});
+  await assert.rejects(cache.get(plan()));
+  const record=f.store?await f.store.get('analysis:'+await api.analysisKey(plan())):null;
+  assert.equal(record.providerStatus,429);assert.equal(record.providerReason,'RESOURCE_EXHAUSTED');assert.equal(record.classification,'quota');
+  assert.ok(!JSON.stringify(record).includes('sensitive'));
+});
+test('Gemini diagnostic probe classifies a refusal and never returns provider text or credentials',async()=>{
+  const {probeGemini}=await import('./gemini.mjs');
+  assert.equal(typeof probeGemini,'function');
+  const result=await probeGemini({GEMINI_API_KEY:'PRIVATE',GEMINI_MODEL:'gemini-4-hydrogen'},async(url,options)=>{
+    assert.ok(!options.body.includes('application/pdf'));
+    return {ok:false,status:429,json:async()=>({error:{status:'RESOURCE_EXHAUSTED',message:'Quota exceeded PRIVATE'}})};
+  });
+  assert.equal(result.classification,'quota');assert.equal(result.providerStatus,429);assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+});
 test('cache records contain neither source PDFs nor private Telegram identifiers',async()=>{
   assert.equal(typeof api.AnalysisCache,'function');const f=fixture();await new api.AnalysisCache(f.store,f.generate).get(plan());
   const key=await api.analysisKey(plan()),stored=await f.store.get('analysis:'+key);

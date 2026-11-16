@@ -38,6 +38,8 @@ Python parses actual report periods, backfills missing documents from the offici
 
 The application cache resides in private Durable Object storage. A key includes the report, mode, exact interval and content hashes of all selected and baseline documents. New releases, corrections and changed source sets produce a new key. Identical requests, including concurrent requests, reuse the stored answer without a model request. Ready answers survive redeployments; PDFs are not retained in the cache. Unknown outcomes after an interrupted provider call are held for review instead of automatically submitted again. Explicit provider refusals may be retried on a later user request. Model errors do not prevent PDF delivery.
 
+Provider refusals retain only safe diagnostics in private storage: HTTP status, a restricted provider reason enum and a classification such as quota, missing model or denied access. Request credentials and raw error bodies are not stored. The owner-only `gemini-probe` endpoint makes one minimal connectivity request without PDFs or Telegram sends; it cannot reconstruct the reason for historical failures recorded before these diagnostics existed.
+
 Analysis checks: `node --test coordinator.test.mjs analysis.test.mjs` and `python -m unittest discover -v`.
 
 Telegram delivery uses a concise view of each stored analysis: a short conclusion, up to four key figures prioritising the newest release, two or three changes and one main limitation. The body is bounded to 3,300 characters so the timestamp footer fits in the same Telegram message. Older stored analyses are compacted locally without another model request. The webhook must subscribe to both `message` and `callback_query` updates for inline buttons to work.
