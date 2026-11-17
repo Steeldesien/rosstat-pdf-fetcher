@@ -20,3 +20,25 @@ test('failed generation never silently falls back to the old PDF-only method',as
  const m=await import('./engine-analysis.mjs');
  await assert.rejects(m.generateEngineAnalysis({AI:{run:async()=>({response:{summary:'Рост {{week}}.',observations:[],conclusion:'Наблюдаем динамику.'}})},WORKERS_AI_MODEL:'@cf/openai/gpt-oss-120b'},plan),/bundle/i);
 });
+test('provider and validation failures preserve a safe diagnostic without discarding the response',async()=>{
+ const m=await import('./engine-analysis.mjs');
+ const env={AI:{run:async()=>({response:{summary:'Рост 99%.',observations:[],conclusion:'Наблюдаем.'}})}};
+ await assert.rejects(m.generateEngineAnalysis(env,{...plan,engine:bundle}),e=>e.review?.validation==='Unsupported numeric narrative');
+});
+test('the exact selected reporting date is metadata, while a different date is rejected',async()=>{
+ const m=await import('./engine-analysis.mjs');
+ const raw={summary:'За период 03‑09 ноября 2026 г. инфляция изменилась на {{week}}.',observations:[],conclusion:'Следим за динамикой.'};
+ assert.match(m.renderEngineAnalysis(plan,bundle,raw),/0,12%/);
+ assert.throws(()=>m.renderEngineAnalysis(plan,bundle,{...raw,summary:'За период 02‑09 ноября 2026 г. рост {{week}}.'}),/numeric/i);
+});
+test('declared rolling horizons are metadata and the commentary must be Russian',async()=>{
+ const m=await import('./engine-analysis.mjs'),b={...bundle,facts:[...bundle.facts,{id:'ma13',label:'Тринадцать недель',value:'7,9%',origin:'estimate'}]};
+ const raw={summary:'Рост {{week}}.',observations:['Темп за 13 недель — {{ma13}}.'],conclusion:'Следим за динамикой.'};
+ assert.match(m.renderEngineAnalysis(plan,b,raw),/13 недель/);
+ assert.throws(()=>m.renderEngineAnalysis(plan,b,{...raw,summary:'Prices rose {{week}}.'}),/Russian/i);
+});
+test('report files can use an explicitly calculated summary when the model is unavailable',async()=>{
+ const m=await import('./engine-analysis.mjs');
+ const text=m.computedEngineSummary(plan,bundle);
+ assert.match(text,/Нейросетевой комментарий недоступен/);assert.match(text,/0,12%/);assert.match(text,/Расчётная сводка/);
+});

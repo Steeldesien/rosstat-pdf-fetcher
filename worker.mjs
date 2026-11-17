@@ -1,11 +1,11 @@
 import {DurableObject} from 'cloudflare:workers';
 import {Coordinator, commandMode, connectionTarget, documentName, deliveryCaption, REPORTS, analysisModes, ANALYSIS_LABELS} from './coordinator.mjs';
-import {AnalysisCache} from './analysis-cache.mjs';
+import {AnalysisCache,analysisKey} from './analysis-cache.mjs';
 import {AgyAuth} from './agy-auth.mjs';
 import {generateWorkersAnalysis} from './workers-ai.mjs';
 import {normalizeGrowthNarrative} from './workers-weekly.mjs';
 import {reportProgress} from './status-messages.mjs';
-import {generateEngineAnalysis} from './engine-analysis.mjs';
+import {generateEngineAnalysis,computedEngineSummary} from './engine-analysis.mjs';
 import {ReportFiles} from './report-files.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
@@ -72,7 +72,8 @@ export class CoordinatorObject extends DurableObject {
       validatePlan(plan,selection);
       if(!engineEnabled(this.env,plan))return {enabled:false};
       const saved=await this.analyses.review(cachePlan(this.env,plan),'inspect');
-      return {enabled:true,status:saved.record?.status||'missing'};
+      const computed=await this.storage.get('engine-computed:'+saved.key);
+      return {enabled:true,status:saved.record?.status==='ready'||computed?'ready':saved.record?.status||'missing'};
     }
     if(method==='reportFile'){
       const [id,owner,key,kind,file]=args;
@@ -146,10 +147,17 @@ export class CoordinatorObject extends DurableObject {
     else {
       validatePlan(plan,selection);
       try {
-        const result=await this.analyses.get(cachePlan(this.env,plan));
-        const concise=engineEnabled(this.env,plan)?result.text:compactAnalysis(result.text);
-        text=concise+`\n\n${result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
-        status=result.cached?'cached':'generated';
+        let result;
+        try{result=await this.analyses.get(cachePlan(this.env,plan));}
+        catch(error){
+          if(!engineEnabled(this.env,plan))throw error;
+          const key=await analysisKey(cachePlan(this.env,plan)),fallback=await this.storage.get('engine-computed:'+key);
+          result=fallback||{key,text:computedEngineSummary(plan),createdAt:Date.now(),computed:true,cached:false};
+          if(!fallback)await this.storage.put('engine-computed:'+key,{...result,cached:true});
+        }
+        const concise=engineEnabled(this.env,plan)?normalizeGrowthNarrative(result.text).replace(/без\s+уч[её]та\s+сезонности/giu,'с исключением сезонности'):compactAnalysis(result.text);
+        text=concise+`\n\n${result.computed?'Расчётный отчёт':result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
+        status=result.computed?'calculated_without_ai':result.cached?'cached':'generated';
         card={key:result.key,text:concise};
       } catch {
         text='PDF доставлен. Анализ сейчас недоступен: провайдер отказал в запросе, исчерпана квота либо ответ не удалось проверить. Подтверждённые результаты сохраняются; запросы с неопределённым исходом автоматически не повторяются.';
@@ -282,6 +290,10 @@ export default {
       }
       if (admin) {
         if(path==='/admin/gemini-probe'&&request.method==='POST')return reply(await probeGemini(env));
+        if(path==='/admin/engine-probe'&&request.method==='POST'){
+          try{return reply(await generateEngineAnalysis(env,await request.json()));}
+          catch(error){return reply({ok:false,review:error.review||{stage:'bundle',validation:error.message}});}
+        }
         if(path==='/admin/agy-auth'&&request.method==='POST'){
           const d=await request.json();
           if(!['start','status','submit','diagnostic'].includes(d.op))return new Response('Invalid request',{status:400});
