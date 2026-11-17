@@ -237,6 +237,13 @@ class Broker:
                 'documents':[{k:d[k] for k in ['title','url','period_start','period_end']} for d in plan['documents'] if d.get('format')!='table']})
         except (IncompleteArchive,ValueError):
             return self.call('analysis-failure',json={'job_id':job['id'],'run_id':self.run_id,'reason':'incomplete_archive'})
+        if job['kind']=='inflation':
+            from engine_client import analyze as analyze_engine
+            selected_url=next((d['url'] for d in plan['documents'] if d['role']=='selected'),None)
+            publication=next((r.get('stamp') for r in found if r.get('url')==selected_url and r.get('stamp')),None)
+            if publication:plan={**plan,'publication_stamp':float(publication)}
+            result=analyze_engine(self,job,plan,known)
+            if result is not None:return result
         result=self.call('analyze',json={'job_id':job['id'],'run_id':self.run_id,'plan':plan})
         if result.get('card'):
             try:

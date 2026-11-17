@@ -61,3 +61,11 @@ Each command checks the official RSS and the PDF catalogue and downloads the new
 PDF captions show the official news publication timestamp and the completed-download timestamp, to seconds in Asia/Yekaterinburg (UTC+5). For archive-only files without a news timestamp, publication time is explicitly unavailable; the catalogue's file date is shown separately and is not presented as an exact publication time.
 
 Scheduled jobs create one progress message in the connected chat/topic when their start time becomes due. The same message is edited from search to downloading to downloaded before the PDF is sent. Source or dispatch errors edit it to an error, and the next actual retry restores the search state. An unpublished release remains in search and retains the existing minute/hour polling cadence; repeated checks do not create or edit duplicate unchanged statuses. Status message identifiers and destinations stay in private coordinator storage. A lost initial Telegram acknowledgement is held instead of creating duplicate messages, and status failures never block PDF delivery. A failed scheduled analysis updates that same message to explain that the PDF was delivered but analysis failed.
+# Optional private calculation engine
+
+The downloader can load a separately maintained private calculation repository for weekly-release reports. Only the generic transport is public. Configure the Actions variable `INFLATION_ENGINE_REPOSITORY`, a repository-specific SSH deploy key in the `INFLATION_ENGINE_DEPLOY_KEY` secret, and the coordinator feature flag `INFLATION_ENGINE_ENABLED`. The calculation repository supplies `bot_bridge.py` and `requirements.txt`.
+
+Private checkout happens only after a source PDF has arrived and an uncached calculation is required. Source data and calculations are persisted only in that private repository. No private source or report files are uploaded as Actions artifacts or saved in public Actions caches. Telegram file IDs and the private coordinator cache reuse ready analyses and all three report files.
+
+Native engine reports represent one weekly release; existing rolling-period analysis and other statistical reports retain their own selection and calculation paths.
+

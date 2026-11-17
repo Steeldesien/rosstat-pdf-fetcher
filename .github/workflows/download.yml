@@ -27,12 +27,19 @@ jobs:
       - name: Downloader tests
         run: python -m unittest discover -v
       - name: Coordinator tests
-        run: node --test coordinator.test.mjs analysis.test.mjs workers-ai.test.mjs workers-facts.test.mjs workers-weekly.test.mjs status-messages.test.mjs agy-auth.test.mjs
+        run: node --test coordinator.test.mjs analysis.test.mjs workers-ai.test.mjs workers-facts.test.mjs workers-weekly.test.mjs status-messages.test.mjs agy-auth.test.mjs engine-analysis.test.mjs report-files.test.mjs
+      - name: Report rendering tools
+        if: vars.INFLATION_ENGINE_REPOSITORY != ''
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils
       - name: Download and relay PDF
         env:
           JOB_ID: ${{ inputs.job_id }}
           BROKER_URL: ${{ secrets.BROKER_URL }}
           BROKER_TOKEN: ${{ secrets.BROKER_TOKEN }}
+          INFLATION_ENGINE_REPOSITORY: ${{ vars.INFLATION_ENGINE_REPOSITORY }}
+          INFLATION_ENGINE_DEPLOY_KEY: ${{ secrets.INFLATION_ENGINE_DEPLOY_KEY }}
         run: python -u runner.py
       - name: Report unexpected workflow failure
         if: failure()

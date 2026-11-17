@@ -5,11 +5,14 @@ import {AgyAuth} from './agy-auth.mjs';
 import {generateWorkersAnalysis} from './workers-ai.mjs';
 import {normalizeGrowthNarrative} from './workers-weekly.mjs';
 import {reportProgress} from './status-messages.mjs';
+import {generateEngineAnalysis} from './engine-analysis.mjs';
+import {ReportFiles} from './report-files.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
 const richWeekly=(env,plan)=>env.ANALYSIS_PROVIDER==='workers-ai'&&env.WORKERS_AI_RICH_WEEKLY==='true'&&plan.kind==='inflation'&&plan.mode==='release';
-const cachePlan=(env,plan)=>richWeekly(env,plan)?{...plan,analysis_format:'workers-weekly-full-v1'}:plan;
+const engineEnabled=(env,plan)=>env.INFLATION_ENGINE_ENABLED==='true'&&plan.kind==='inflation'&&plan.mode==='release';
+const cachePlan=(env,plan)=>engineEnabled(env,plan)?{...plan,analysis_format:'private-wcpi-engine-v1'}:richWeekly(env,plan)?{...plan,analysis_format:'workers-weekly-full-v1'}:plan;
 
 async function github(env, path, options={}) {
   if (!env.GITHUB_TOKEN) throw new Error('Dispatch credential is not configured');
@@ -36,6 +39,7 @@ export class CoordinatorObject extends DurableObject {
     this.storage=ctx.storage;this.env=env;
     this.agyAuth=new AgyAuth(ctx.storage);
     this.analyses=new AnalysisCache(ctx.storage,plan=>{
+      if(engineEnabled(env,plan))return generateEngineAnalysis(env,plan);
       if(richWeekly(env,plan)){const {analysis_format,...sourcePlan}=plan;return this.workersFullAnalyses.get(sourcePlan).then(result=>({...result,text:normalizeGrowthNarrative(result.text)}));}
       return env.ANALYSIS_PROVIDER==='workers-ai'&&plan.kind==='inflation'?generateWorkersAnalysis(env,plan):generateAnalysis(env,plan);
     });
@@ -63,6 +67,28 @@ export class CoordinatorObject extends DurableObject {
     });
   }
   async invoke(method,args=[]) {
+    if(method==='engineStatus'){
+      const [id,owner,plan]=args,selection=await this.coordinator.analysisAccess(id,owner);
+      validatePlan(plan,selection);
+      if(!engineEnabled(this.env,plan))return {enabled:false};
+      const saved=await this.analyses.review(cachePlan(this.env,plan),'inspect');
+      return {enabled:true,status:saved.record?.status||'missing'};
+    }
+    if(method==='reportFile'){
+      const [id,owner,key,kind,file]=args;
+      await this.coordinator.cardAccess(id,owner,key);
+      return this.coordinator.serial(async()=>{
+        const files=new ReportFiles(this.storage,async payload=>{
+          const destination=await this.coordinator.destination()||{chatId:this.env.TELEGRAM_CHAT_ID};
+          if(payload.fileId)return telegram(this.env,'sendDocument',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{}),document:payload.fileId})});
+          const form=new FormData();form.append('chat_id',destination.chatId);
+          if(destination.threadId)form.append('message_thread_id',String(destination.threadId));
+          form.append('document',new Blob([payload.bytes],{type:'text/html'}),payload.name);
+          return telegram(this.env,'sendDocument',{body:form});
+        });
+        return files.deliver(id,key,kind,file);
+      });
+    }
     if(method==='agyAuth')return this.coordinator.serial(()=>this.agyAuth[args[0]](...args.slice(1)));
     if(method==='workersPreview'){
       const plan=args[0];validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.workersAnalyses.get(plan);
@@ -119,9 +145,10 @@ export class CoordinatorObject extends DurableObject {
       validatePlan(plan,selection);
       try {
         const result=await this.analyses.get(cachePlan(this.env,plan));
-        text=compactAnalysis(result.text)+`\n\n${result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
+        const concise=engineEnabled(this.env,plan)?result.text:compactAnalysis(result.text);
+        text=concise+`\n\n${result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
         status=result.cached?'cached':'generated';
-        card={key:result.key,text:compactAnalysis(result.text)};
+        card={key:result.key,text:concise};
       } catch {
         text='PDF доставлен. Анализ сейчас недоступен: провайдер отказал в запросе, исчерпана квота либо ответ не удалось проверить. Подтверждённые результаты сохраняются; запросы с неопределённым исходом автоматически не повторяются.';
       }
@@ -287,6 +314,9 @@ export default {
         const data=form ? Object.fromEntries(form) : await request.json();
         if(path==='/runner/agy-auth'&&validId(data.session_id)&&validId(data.run_id))return reply(await object.invoke('agyAuth',['runner',data.session_id,data.run_id,data.op,data]));
         if (!validId(data.job_id) || !validId(data.run_id)) return new Response('Invalid request',{status:400});
+        if(path==='/runner/engine-status')return reply(await object.invoke('engineStatus',[data.job_id,data.run_id,data.plan]));
+        if(path==='/runner/report')return reply(await object.invoke('reportFile',[data.job_id,data.run_id,data.key,data.kind,null]));
+        if(path==='/runner/report-upload'&&data.document instanceof File)return reply(await object.invoke('reportFile',[data.job_id,data.run_id,data.key,data.kind,{name:data.document.name,bytes:new Uint8Array(await data.document.arrayBuffer())}]));
         if(path==='/runner/card')return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key]));
         if(path==='/runner/card-upload'&&data.image instanceof File)return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key,new Uint8Array(await data.image.arrayBuffer())]));
         if (path==='/runner/claim') return reply(await object.invoke('claim',[data.job_id,data.run_id]));
