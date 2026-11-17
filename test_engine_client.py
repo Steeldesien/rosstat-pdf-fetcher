@@ -3,6 +3,12 @@ from unittest.mock import Mock,patch
 import engine_client as e
 
 class EngineClientTests(unittest.TestCase):
+    def test_host_key_pin_matches_the_official_github_ed25519_fingerprint(self):
+        import hashlib,base64
+        from pathlib import Path
+        line=next(x for x in (Path(e.__file__).parent/'github_known_hosts').read_text().splitlines() if x.startswith('github.com ssh-ed25519 '))
+        fingerprint=base64.b64encode(hashlib.sha256(base64.b64decode(line.split()[2])).digest()).decode().rstrip('=')
+        self.assertEqual(fingerprint,'+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU')
     def test_a_cached_analysis_does_not_load_private_code_or_run_ai(self):
         broker=Mock();broker.run_id='run';job={'id':'job','kind':'inflation','analysis_mode':'release'}
         broker.call.side_effect=[{'enabled':True,'status':'ready'},{'status':'completed','card':{'key':'a'*64,'text':'saved'}},{'status':'completed'},{'status':'completed'},{'status':'completed'}]

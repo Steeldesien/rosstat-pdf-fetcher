@@ -303,6 +303,7 @@ def poll(job_id, broker, fetch, sleep=time.sleep, clock=time.monotonic, duration
             print('Source requested backoff:', delay, 'seconds', flush=True)
             return 'deferred'
         except Exception as error:
+            if getattr(broker,'reports_expected',False):raise
             # Do not print request exceptions, URLs from broker responses, or headers.
             print('Check will retry:', type(error).__name__, flush=True)
             if claimed and hasattr(broker,'progress'):broker.progress(claim['job'],'error')

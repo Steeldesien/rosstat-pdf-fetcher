@@ -134,7 +134,8 @@ export class CoordinatorObject extends DurableObject {
       const cache=await this.storage.list({prefix:'summary-card:'}),deliveries=await this.storage.list({prefix:'summary-card-delivery:'});
       const reports=await this.storage.list({prefix:'report-file:'}),reportDeliveries=await this.storage.list({prefix:'report-file-delivery:'});
       return {cachedImages:cache.size,sent:[...deliveries.values()].filter(v=>v.status==='sent').length,reused:[...deliveries.values()].filter(v=>v.status==='sent'&&v.cached).length,
-        cachedHtmlReports:reports.size,htmlDeliveries:[...reportDeliveries.entries()].map(([key,v])=>({job:key.split(':')[1],kind:key.split(':')[2],status:v.status}))};
+        cachedHtmlReports:reports.size,htmlDeliveries:[...reportDeliveries.entries()].map(([key,v])=>({job:key.split(':')[1],kind:key.split(':')[2],status:v.status})),
+        imageDeliveries:[...deliveries.entries()].map(([key,v])=>({job:key.slice('summary-card-delivery:'.length),status:v.status,format:v.format||'photo',cached:!!v.cached}))};
     }
     if (!['manual','tick','claim','deliver','backoff','waiting','release','progress','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
     return this.coordinator[method](...args);
@@ -185,9 +186,11 @@ export class CoordinatorObject extends DurableObject {
     return {...finished,...(card?{card}:{})};
   }
 
-  async sendAnalysisCard(id,owner,key,bytes=null) {
+  async sendAnalysisCard(id,owner,key,bytes=null,name='Rosstat_summary.png') {
     const selection=await this.coordinator.cardAccess(id,owner,key);
-    const cacheKey='summary-card:'+(selection.mode==='release'?'neutral-v1:':'range-v2:')+key,deliveryKey='summary-card-delivery:'+id;
+    const documentPng=engineEnabled(this.env,selection);
+    if(typeof name!=='string'||name.length>180||/[\/\\\x00-\x1f]/.test(name)||!name.endsWith('.png'))throw Error('Invalid PNG name');
+    const cacheKey='summary-card:'+(documentPng?'engine-png-v1:':selection.mode==='release'?'neutral-v1:':'range-v2:')+key,deliveryKey='summary-card-delivery:'+id;
     return this.coordinator.serial(async()=>{
       if (await this.storage.get(deliveryKey)) return {status:'completed'};
       const cached=await this.storage.get(cacheKey);
@@ -197,17 +200,17 @@ export class CoordinatorObject extends DurableObject {
       await this.storage.put(deliveryKey,{status:'sending',at:Date.now()});
       try {
         let result;
-        if (cached) result=await telegram(this.env,'sendPhoto',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
-          chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{}),photo:cached.fileId})});
+        if (cached) result=await telegram(this.env,documentPng?'sendDocument':'sendPhoto',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
+          chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{}),[documentPng?'document':'photo']:cached.fileId})});
         else {
           const form=new FormData();form.append('chat_id',destination.chatId);
           if(destination.threadId)form.append('message_thread_id',String(destination.threadId));
-          form.append('photo',new Blob([bytes],{type:'image/png'}),'Rosstat_summary.png');
-          result=await telegram(this.env,'sendPhoto',{body:form});
+          form.append(documentPng?'document':'photo',new Blob([bytes],{type:'image/png'}),name);
+          result=await telegram(this.env,documentPng?'sendDocument':'sendPhoto',{body:form});
         }
-        const fileId=result.photo?.at(-1)?.file_id;
+        const fileId=documentPng?result.document?.file_id:result.photo?.at(-1)?.file_id;
         if(fileId)await this.storage.put(cacheKey,{fileId,createdAt:Date.now()});
-        await this.storage.put(deliveryKey,{status:'sent',at:Date.now(),cached:!!cached,messageId:result.message_id});
+        await this.storage.put(deliveryKey,{status:'sent',at:Date.now(),cached:!!cached,messageId:result.message_id,...(documentPng?{format:'png-document'}:{})});
         return {status:'completed'};
       } catch {
         await this.storage.put(deliveryKey,{status:'uncertain',at:Date.now()});
@@ -332,7 +335,7 @@ export default {
         if(path==='/runner/report')return reply(await object.invoke('reportFile',[data.job_id,data.run_id,data.key,data.kind,null]));
         if(path==='/runner/report-upload'&&data.document instanceof File)return reply(await object.invoke('reportFile',[data.job_id,data.run_id,data.key,data.kind,{name:data.document.name,bytes:new Uint8Array(await data.document.arrayBuffer())}]));
         if(path==='/runner/card')return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key]));
-        if(path==='/runner/card-upload'&&data.image instanceof File)return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key,new Uint8Array(await data.image.arrayBuffer())]));
+        if(path==='/runner/card-upload'&&data.image instanceof File)return reply(await object.invoke('sendAnalysisCard',[data.job_id,data.run_id,data.key,new Uint8Array(await data.image.arrayBuffer()),data.image.name]));
         if (path==='/runner/claim') return reply(await object.invoke('claim',[data.job_id,data.run_id]));
         if (path==='/runner/progress') return reply(await object.invoke('progress',[data.job_id,data.run_id,data.stage,data.key]));
         if (path==='/runner/release') return reply(await object.invoke('release',[data.job_id,data.run_id]));

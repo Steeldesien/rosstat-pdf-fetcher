@@ -16,10 +16,9 @@ def load_engine():
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repo) or not key:raise RuntimeError('Private calculation module is not configured')
         folder=Path(tempfile.mkdtemp(prefix='rosstat-engine-'));root=folder/'engine'
         private=folder/'key';private.write_text(key,encoding='utf-8');private.chmod(0o600)
-        response=requests.get('https://api.github.com/meta',timeout=25);response.raise_for_status()
-        keys=response.json().get('ssh_keys',[])
-        if not keys or any(not re.match(r'^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+$',k) for k in keys):raise RuntimeError('GitHub SSH host keys unavailable')
-        hosts=folder/'known_hosts';hosts.write_text(''.join('github.com '+k+'\n' for k in keys),encoding='utf-8')
+        pins=(Path(__file__).parent/'github_known_hosts').read_text(encoding='utf-8')
+        if not pins.strip() or any(not re.fullmatch(r'github\.com (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+',line) for line in pins.splitlines()):raise RuntimeError('GitHub SSH host key pin is invalid')
+        hosts=folder/'known_hosts';hosts.write_text(pins,encoding='utf-8')
         git_env={**os.environ,'GIT_TERMINAL_PROMPT':'0','GIT_SSH_COMMAND':f'ssh -i "{private}" -o IdentitiesOnly=yes -o UserKnownHostsFile="{hosts}" -o StrictHostKeyChecking=yes'}
         run=subprocess.run(['git','clone','--depth=1','git@github.com:'+repo+'.git',str(root)],env=git_env,capture_output=True,timeout=180)
         if run.returncode:raise RuntimeError('Private calculation module checkout failed')
@@ -64,10 +63,12 @@ def analyze(broker,job,plan,known=None):
     result=broker.call('analyze',json={**identity,'plan':plan})
     card=result.get('card')
     if not card:return result
+    broker.reports_expected=True
     # Ask the broker first: Telegram file IDs allow all three files to be reused without rendering.
     statuses={'png':broker.call('card',json={**identity,'key':card['key']})}
     for kind in ['short','full']:
         statuses[kind]=broker.call('report',json={**identity,'key':card['key'],'kind':kind})
+    if any(s.get('status') not in ('completed','needs_image','needs_file') for s in statuses.values()):raise RuntimeError('Report delivery outcome is uncertain')
     if any(s.get('status')=='needs_image' or s.get('status')=='needs_file' for s in statuses.values()):
         if not loaded:
             loaded=load_engine()
@@ -86,4 +87,5 @@ def analyze(broker,job,plan,known=None):
     if loaded:
         try:_persist(loaded[1],loaded[2])
         except Exception:print('Private history persistence deferred; report delivery retained',flush=True)
+    broker.reports_expected=False
     return result

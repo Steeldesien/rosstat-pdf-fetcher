@@ -92,6 +92,17 @@ class DeliveryBehavior(unittest.TestCase):
         self.assertEqual(self.module.poll('done', Broker(), lambda url: self.fail('Unexpected Rosstat request'),
                                          sleep=lambda t: self.fail('Unexpected wait')), 'completed')
 
+    def test_report_rendering_failure_is_not_reported_as_a_successful_workflow(self):
+        class Broker:
+            reports_expected=False
+            def claim(self,job_id):return {'status':'ready','job':{'id':job_id,'kind':'inflation','mode':'latest','analysis_mode':'release'}}
+            def deliver(self,*args):pass
+            def analyze(self,*args):self.reports_expected=True;raise RuntimeError('Report generation failed')
+            def waiting(self,*args):return {'interval_seconds':3600}
+        body=rss((TITLE,SOURCE,'Wed, 11 Nov 2026 19:00:00 +0300'))
+        with self.assertRaisesRegex(RuntimeError,'Report generation failed'):
+            self.module.poll('job',Broker(),lambda url:body if url==self.module.RSS else b'%PDF-real',sleep=lambda t:None)
+
     def test_post_delivery_lost_response_recovers_from_private_state_without_redownload(self):
         class Broker:
             claims = 0
