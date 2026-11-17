@@ -204,15 +204,17 @@ export class Coordinator {
     return {kind:menu.kind,mode:match[2]};
   }
 
-  async manual(updateId,kind='inflation',analysisMode=null) {
+  async manual(updateId,kind='inflation',analysisMode=null,source=null) {
     if (!REPORT_KINDS.has(kind)) throw new Error('Unsupported report');
     if (analysisMode && !analysisModes(kind).includes(analysisMode)) throw Error('Unsupported analysis mode');
+    if(source&&(!sourceAllowed(source.url)||typeof source.title!=='string'||source.title.length>1000||!REPORTS.find(r=>r.kind===kind).prefixes.some(p=>source.title.toLowerCase().startsWith(p))||!reportEnd(source.title)||analysisMode!=='release'))throw Error('Invalid fixed release');
     return this.serial(async () => {
       const state=await this.state(), key=String(updateId);
       if (state.requests[key] && state.jobs[state.requests[key]]) return {id: state.requests[key], created: false};
       const id=crypto.randomUUID();
       state.jobs[id]={id,kind,mode:'latest',phase:'queued',createdAt:this.effects.now(),lastDispatch:0};
       if (analysisMode) state.jobs[id].analysisMode=analysisMode;
+      if(source){state.jobs[id].fixedSource={url:source.url,title:source.title,stamp:Number.isFinite(source.stamp)?source.stamp:null};state.jobs[id].report_end=reportEnd(source.title);}
       state.requests[key]=id;
       await this.save(state);
       return {id,created:true};
@@ -278,6 +280,7 @@ export class Coordinator {
       const publicJob={id:job.id,kind:job.kind,mode:job.mode};
       if (job.analysisMode) publicJob.analysis_mode=job.analysisMode;
       if(job.repairOnly)publicJob.resume_source={url:job.sourceUrl,title:job.sourceTitle,stamp:job.publicationStamp};
+      else if(job.fixedSource)publicJob.resume_source=job.fixedSource;
       if (job.mode==='scheduled') publicJob.not_before=job.not_before;
       if (job.report_end) publicJob.report_end=job.report_end;
       if (job.gdp_period) publicJob.gdp_period=job.gdp_period;

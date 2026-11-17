@@ -3,6 +3,16 @@ from unittest.mock import Mock,patch
 import engine_client as e
 
 class EngineClientTests(unittest.TestCase):
+    def test_pinned_old_issue_is_not_replaced_by_newer_private_archive_entries(self):
+        import runner,analysis
+        from unittest.mock import patch
+        old={'title':'Об оценке индекса потребительских цен с 27 октября по 2 ноября 2026 года','url':'https://rosstat.gov.ru/old.pdf','stamp':1}
+        new={'title':'Об оценке индекса потребительских цен с 3 по 9 ноября 2026 года','url':'https://rosstat.gov.ru/new.pdf','stamp':2}
+        broker=runner.Broker.__new__(runner.Broker);broker.run_id='run';broker.call=Mock(return_value={'documents':[new]})
+        job={'id':'old','kind':'inflation','mode':'latest','analysis_mode':'release','resume_source':old}
+        with patch.object(analysis,'prepare_plan',side_effect=lambda plan,*a:plan),patch.object(e,'analyze',return_value={'status':'completed'}) as run:
+            broker.analyze(job,[old],{},lambda url:self.fail('Unexpected archive fetch'))
+        self.assertEqual(run.call_args.args[2]['end'],'2026-11-02')
     def test_host_key_pin_matches_the_official_github_ed25519_fingerprint(self):
         import hashlib,base64
         from pathlib import Path

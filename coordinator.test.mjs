@@ -53,6 +53,13 @@ test('private report repair reuses the same source and never redelivers the PDF'
   const next=await f.coordinator.claim(job.id,'second');assert.equal(next.job.resume_source.url,item.url);
   await f.coordinator.deliver(job.id,'second',bytes,item);assert.equal(f.sent.length,1);
 });
+test('an operator can pin a previous weekly release without changing the normal latest command',async()=>{
+ const f=fixture(),source={url:'https://rosstat.gov.ru/storage/mediabank/ipc11_02.pdf',title:'Об оценке индекса потребительских цен с 27 октября по 2 ноября 2026 года',stamp:1793998500};
+ const job=await f.coordinator.manual('old-week','inflation','release',source);
+ const claim=await f.coordinator.claim(job.id,'old-run');
+ assert.deepEqual(claim.job.resume_source,source);assert.equal(claim.job.report_end,'2026-11-02');
+ await assert.rejects(f.coordinator.manual('bad','inflation','release',{...source,url:'https://example.com/a.pdf'}));
+});
 
 test('only the matching completed analysis runner can attach a summary image',async()=>{
   const f=fixture(),job=await f.coordinator.manual(777,'inflation','release');

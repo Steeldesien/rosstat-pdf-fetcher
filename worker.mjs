@@ -329,7 +329,7 @@ export default {
         if (path==='/admin/manual') {
           const data=await request.json();
           if (!validId(data.request_id)) return new Response('Invalid request',{status:400});
-          return reply(await object.invoke('manual',[data.request_id,data.kind||'inflation',data.analysis_mode||null]));
+          return reply(await object.invoke('manual',[data.request_id,data.kind||'inflation',data.analysis_mode||null,data.source||null]));
         }
         if(path==='/admin/resume-reports'&&request.method==='POST'){
           const data=await request.json();if(!validId(data.job_id))return new Response('Invalid job',{status:400});

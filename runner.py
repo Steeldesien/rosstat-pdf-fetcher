@@ -228,7 +228,9 @@ class Broker:
         from analysis import IncompleteArchive, prepare_plan, complete_archive
         try:
             history=self.call('archive',json={'job_id':job['id'],'run_id':self.run_id}).get('documents',[])
-            found += history
+            if job.get('resume_source') and job['analysis_mode']=='release':
+                found=[r for r in found if r['url']==job['resume_source']['url']]
+            else:found += history
             if job['mode']!='latest' and job['analysis_mode']!='release':
                 found += catalogue_entries(fetch(CATALOGUE),job['kind'])
             try:
