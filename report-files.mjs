@@ -1,3 +1,4 @@
+export const usesMultipart=path=>['/runner/deliver','/runner/card-upload','/runner/report-upload'].includes(path);
 export class ReportFiles{
   constructor(store,send){this.store=store;this.send=send;}
   async deliver(job,key,kind,file=null){

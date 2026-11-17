@@ -1,5 +1,12 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {ReportFiles} from './report-files.mjs';
+test('HTML upload is parsed as multipart, while report lookup is JSON',async()=>{
+ const {usesMultipart}=await import('./report-files.mjs');
+ assert.equal(usesMultipart('/runner/report-upload'),true);
+ assert.equal(usesMultipart('/runner/card-upload'),true);
+ assert.equal(usesMultipart('/runner/deliver'),true);
+ assert.equal(usesMultipart('/runner/report'),false);
+});
 test('short and full HTML are cached independently and duplicate delivery is suppressed',async()=>{
  const map=new Map(),sent=[];const store={get:async k=>map.get(k),put:async(k,v)=>map.set(k,v)};
  const files=new ReportFiles(store,async payload=>{sent.push(payload);return {document:{file_id:'file-'+sent.length}};});

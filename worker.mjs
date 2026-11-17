@@ -6,7 +6,7 @@ import {generateWorkersAnalysis} from './workers-ai.mjs';
 import {normalizeGrowthNarrative} from './workers-weekly.mjs';
 import {reportProgress} from './status-messages.mjs';
 import {generateEngineAnalysis,computedEngineSummary} from './engine-analysis.mjs';
-import {ReportFiles} from './report-files.mjs';
+import {ReportFiles,usesMultipart} from './report-files.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
@@ -87,9 +87,14 @@ export class CoordinatorObject extends DurableObject {
           form.append('document',new Blob([payload.bytes],{type:'text/html'}),payload.name);
           return telegram(this.env,'sendDocument',{body:form});
         });
-        return files.deliver(id,key,kind,file);
+        try{return await files.deliver(id,key,kind,file);}
+        catch(error){
+          await this.storage.put('report-diagnostic:'+id,{kind,error:error.message,at:Date.now(),metadata:file?{nameLength:file.name?.length,byteLength:file.bytes?.length,isUint8:file.bytes instanceof Uint8Array,prefix:new TextDecoder().decode(file.bytes?.slice(0,100))}:null});
+          throw error;
+        }
       });
     }
+    if(method==='reportDiagnostic')return await this.storage.get('report-diagnostic:'+args[0])||null;
     if(method==='agyAuth')return this.coordinator.serial(()=>this.agyAuth[args[0]](...args.slice(1)));
     if(method==='workersPreview'){
       const plan=args[0];validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.workersAnalyses.get(plan);
@@ -297,6 +302,9 @@ export default {
           try{return reply(await generateEngineAnalysis(env,await request.json()));}
           catch(error){return reply({ok:false,review:error.review||{stage:'bundle',validation:error.message}});}
         }
+        if(path==='/admin/report-diagnostic'&&request.method==='POST'){
+          const d=await request.json();return reply(await object.invoke('reportDiagnostic',[d.job_id]));
+        }
         if(path==='/admin/agy-auth'&&request.method==='POST'){
           const d=await request.json();
           if(!['start','status','submit','diagnostic'].includes(d.op))return new Response('Invalid request',{status:400});
@@ -331,7 +339,7 @@ export default {
       }
       if (runner && request.method==='POST') {
         if (Number(request.headers.get('Content-Length')||0)>25*1024*1024+65536) return new Response('Too large',{status:413});
-        const form=['/runner/deliver','/runner/card-upload'].includes(path) ? await request.formData() : null;
+        const form=usesMultipart(path) ? await request.formData() : null;
         const data=form ? Object.fromEntries(form) : await request.json();
         if(path==='/runner/agy-auth'&&validId(data.session_id)&&validId(data.run_id))return reply(await object.invoke('agyAuth',['runner',data.session_id,data.run_id,data.op,data]));
         if (!validId(data.job_id) || !validId(data.run_id)) return new Response('Invalid request',{status:400});
