@@ -5,8 +5,9 @@ import {AgyAuth} from './agy-auth.mjs';
 import {generateWorkersAnalysis} from './workers-ai.mjs';
 import {normalizeGrowthNarrative} from './workers-weekly.mjs';
 import {reportProgress} from './status-messages.mjs';
-import {generateEngineAnalysis,computedEngineSummary} from './engine-analysis.mjs';
-import {ReportFiles,usesMultipart} from './report-files.mjs';
+import {generateEngineAnalysis,computedEngineSummary,engineArtifactKey,renderEngineAnalysis,validateEngineBundle} from './engine-analysis.mjs';
+import {ReportFiles,usesMultipart,receiptResult} from './report-files.mjs';
+import {ForecastJobs} from './forecast-jobs.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
@@ -65,8 +66,36 @@ export class CoordinatorObject extends DurableObject {
         return telegram(env,'sendDocument',{body:form});
       }
     });
+    this.forecasts=new ForecastJobs(ctx.storage,{
+      now:()=>Date.now(),
+      dispatch:id=>github(env,'actions/workflows/forecast.yml/dispatches',{method:'POST',body:JSON.stringify({ref:'main',inputs:{forecast_id:id}})}),
+      sendSummary:async text=>{
+        const d=await this.coordinator.destination()||{chatId:env.TELEGRAM_CHAT_ID};
+        return telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:d.chatId,...(d.threadId?{message_thread_id:d.threadId}:{}),text})});
+      },
+      sendFile:async payload=>{
+        const d=await this.coordinator.destination()||{chatId:env.TELEGRAM_CHAT_ID};
+        if(payload.fileId)return telegram(env,'sendDocument',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:d.chatId,...(d.threadId?{message_thread_id:d.threadId}:{}),document:payload.fileId})});
+        const form=new FormData();form.append('chat_id',d.chatId);if(d.threadId)form.append('message_thread_id',String(d.threadId));
+        form.append('document',new Blob([payload.bytes],{type:'text/html'}),payload.name);return telegram(env,'sendDocument',{body:form});
+      }
+    });
   }
   async invoke(method,args=[]) {
+    if(method==='tick'){
+      if(this.env.PRE_RELEASE_FORECAST_ENABLED==='true')await this.coordinator.serial(()=>this.forecasts.tick());
+      return this.coordinator.tick();
+    }
+    if(method==='forecastTest')return this.coordinator.serial(()=>{
+      const local=new Date(Date.now()+3*3600000),offset=(3-local.getUTCDay()+7)%7+(local.getUTCDay()===3&&local.getUTCHours()>=19?7:0);
+      const day=new Date(Date.parse(local.toISOString().slice(0,10))+offset*86400000).toISOString().slice(0,10);
+      return this.forecasts.enqueue('forecast-test-'+crypto.randomUUID(),day,true);
+    });
+    if(method==='forecastSummary')return this.forecasts.summary();
+    if(method==='forecastClaim')return this.coordinator.serial(()=>this.forecasts.claim(...args));
+    if(method==='forecastFinish')return this.coordinator.serial(()=>this.forecasts.finish(...args));
+    if(method==='forecastFailure')return this.coordinator.serial(()=>this.forecasts.fail(...args));
+    if(method==='forecastFile')return this.coordinator.serial(()=>this.forecasts.file(...args));
     if(method==='engineStatus'){
       const [id,owner,plan]=args,selection=await this.coordinator.analysisAccess(id,owner);
       validatePlan(plan,selection);
@@ -132,7 +161,9 @@ export class CoordinatorObject extends DurableObject {
       const plan=args[0];validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.analyses.get(cachePlan(this.env,plan));
     }
     if (method==='analysisReview') {
-      const [plan,action]=args;validatePlan(plan,{kind:plan.kind,mode:plan.mode});return this.analyses.review(cachePlan(this.env,plan),action,renderAnalysis);
+      const [plan,action]=args;validatePlan(plan,{kind:plan.kind,mode:plan.mode});
+      const renderer=engineEnabled(this.env,plan)?(p,raw)=>renderEngineAnalysis(p,validateEngineBundle(p),raw):renderAnalysis;
+      return this.analyses.review(cachePlan(this.env,plan),action,renderer);
     }
     if (method==='analysisStatus') return {enabled:analysisAvailable(this.env),keyConfigured:!!this.env.GEMINI_API_KEY,provider:this.env.ANALYSIS_PROVIDER||'gemini',workersBinding:!!this.env.AI,model:this.env.ANALYSIS_PROVIDER==='workers-ai'?this.env.WORKERS_AI_MODEL:this.env.GEMINI_MODEL||null,...(this.env.ANALYSIS_PROVIDER==='workers-ai'?{workersReports:['inflation'],otherReportsProvider:'gemini'}:{})};
     if (method==='cardSummary') {
@@ -140,7 +171,7 @@ export class CoordinatorObject extends DurableObject {
       const reports=await this.storage.list({prefix:'report-file:'}),reportDeliveries=await this.storage.list({prefix:'report-file-delivery:'});
       return {cachedImages:cache.size,sent:[...deliveries.values()].filter(v=>v.status==='sent').length,reused:[...deliveries.values()].filter(v=>v.status==='sent'&&v.cached).length,
         cachedHtmlReports:reports.size,htmlDeliveries:[...reportDeliveries.entries()].map(([key,v])=>({job:key.split(':')[1],kind:key.split(':')[2],status:v.status})),
-        imageDeliveries:[...deliveries.entries()].map(([key,v])=>({job:key.slice('summary-card-delivery:'.length),status:v.status,format:v.format||'photo',cached:!!v.cached}))};
+        imageDeliveries:[...deliveries.entries()].map(([key,v])=>({job:key.split(':')[1],status:v.status,format:v.format||'photo',cached:!!v.cached}))};
     }
     if (!['manual','resumeReports','tick','claim','deliver','backoff','waiting','release','progress','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
     return this.coordinator[method](...args);
@@ -164,7 +195,7 @@ export class CoordinatorObject extends DurableObject {
         const concise=engineEnabled(this.env,plan)?normalizeGrowthNarrative(result.text).replace(/без\s+уч[её]та\s+сезонности/giu,'с исключением сезонности'):compactAnalysis(result.text);
         text=concise+`\n\n${result.computed?'Расчётный отчёт':result.cached?'Сохранённый анализ':'Новый анализ'} · ${new Date(result.createdAt+5*3600000).toISOString().replace('T',' ').slice(0,19)} (UTC+5)`;
         status=result.computed?'calculated_without_ai':result.cached?'cached':'generated';
-        card={key:result.key,text:concise};
+        card={key:engineEnabled(this.env,plan)?await engineArtifactKey(result.key,concise,result.computed):result.key,text:concise};
       } catch {
         text='PDF доставлен. Анализ сейчас недоступен: провайдер отказал в запросе, исчерпана квота либо ответ не удалось проверить. Подтверждённые результаты сохраняются; запросы с неопределённым исходом автоматически не повторяются.';
       }
@@ -173,7 +204,7 @@ export class CoordinatorObject extends DurableObject {
       const finished=await this.coordinator.finishAnalysis(id,owner,status);
       if(finished.progressUpdated)return finished;
     }
-    const deliveryKey='analysis-delivery:'+id,saved=await this.storage.get(deliveryKey);
+    const deliveryKey='analysis-delivery:'+id+(card&&engineEnabled(this.env,plan)?':'+card.key:''),saved=await this.storage.get(deliveryKey);
     if (!saved) {
       // Reserve before Telegram: a lost acknowledgement must not cause silent duplicates.
       await this.storage.put(deliveryKey,{status:'sending',at:Date.now()});
@@ -195,9 +226,10 @@ export class CoordinatorObject extends DurableObject {
     const selection=await this.coordinator.cardAccess(id,owner,key);
     const documentPng=engineEnabled(this.env,selection);
     if(typeof name!=='string'||name.length>180||/[\/\\\x00-\x1f]/.test(name)||!name.endsWith('.png'))throw Error('Invalid PNG name');
-    const cacheKey='summary-card:'+(documentPng?'engine-png-v1:':selection.mode==='release'?'neutral-v1:':'range-v2:')+key,deliveryKey='summary-card-delivery:'+id;
+    const cacheKey='summary-card:'+(documentPng?'engine-png-v1:':selection.mode==='release'?'neutral-v1:':'range-v2:')+key,deliveryKey='summary-card-delivery:'+id+(documentPng?':'+key:'');
     return this.coordinator.serial(async()=>{
-      if (await this.storage.get(deliveryKey)) return {status:'completed'};
+      const receipt=await this.storage.get(deliveryKey);
+      if(receipt)return receiptResult(receipt);
       const cached=await this.storage.get(cacheKey);
       if (!cached&&!bytes) return {status:'needs_image'};
       if (!cached&&(bytes.length>2*1024*1024||!bytes.slice(0,8).every((v,i)=>v===[137,80,78,71,13,10,26,10][i]))) throw Error('Invalid summary PNG');
@@ -298,6 +330,8 @@ export default {
       }
       if (admin) {
         if(path==='/admin/gemini-probe'&&request.method==='POST')return reply(await probeGemini(env));
+        if(path==='/admin/forecast-summary'&&request.method==='GET')return reply(await object.invoke('forecastSummary'));
+        if(path==='/admin/forecast-test'&&request.method==='POST')return reply(await object.invoke('forecastTest'));
         if(path==='/admin/engine-probe'&&request.method==='POST'){
           try{return reply(await generateEngineAnalysis(env,await request.json()));}
           catch(error){return reply({ok:false,review:error.review||{stage:'bundle',validation:error.message}});}
@@ -343,6 +377,11 @@ export default {
         const data=form ? Object.fromEntries(form) : await request.json();
         if(path==='/runner/agy-auth'&&validId(data.session_id)&&validId(data.run_id))return reply(await object.invoke('agyAuth',['runner',data.session_id,data.run_id,data.op,data]));
         if (!validId(data.job_id) || !validId(data.run_id)) return new Response('Invalid request',{status:400});
+        if(path==='/runner/forecast-claim')return reply(await object.invoke('forecastClaim',[data.job_id,data.run_id]));
+        if(path==='/runner/forecast-finish')return reply(await object.invoke('forecastFinish',[data.job_id,data.run_id,data.result]));
+        if(path==='/runner/forecast-failure')return reply(await object.invoke('forecastFailure',[data.job_id,data.run_id,data.error]));
+        if(path==='/runner/forecast-file')return reply(await object.invoke('forecastFile',[data.job_id,data.run_id,data.kind,null]));
+        if(path==='/runner/forecast-upload'&&data.document instanceof File)return reply(await object.invoke('forecastFile',[data.job_id,data.run_id,data.kind,{name:data.document.name,bytes:new Uint8Array(await data.document.arrayBuffer())}]));
         if(path==='/runner/engine-status')return reply(await object.invoke('engineStatus',[data.job_id,data.run_id,data.plan]));
         if(path==='/runner/report')return reply(await object.invoke('reportFile',[data.job_id,data.run_id,data.key,data.kind,null]));
         if(path==='/runner/report-upload'&&data.document instanceof File)return reply(await object.invoke('reportFile',[data.job_id,data.run_id,data.key,data.kind,{name:data.document.name,bytes:new Uint8Array(await data.document.arrayBuffer())}]));

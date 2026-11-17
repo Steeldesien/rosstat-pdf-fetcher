@@ -249,6 +249,9 @@ class Broker:
             selected_url=next((d['url'] for d in plan['documents'] if d['role']=='selected'),None)
             publication=next((r.get('stamp') for r in found if r.get('url')==selected_url and r.get('stamp')),None)
             if publication:plan={**plan,'publication_stamp':float(publication)}
+            else:
+                publication_date=next((r.get('catalogue_date') for r in found if r.get('url')==selected_url and r.get('catalogue_date')),None)
+                if publication_date:plan={**plan,'publication_date':publication_date}
             result=analyze_engine(self,job,plan,known)
             if result is not None:return result
         result=self.call('analyze',json={'job_id':job['id'],'run_id':self.run_id,'plan':plan})

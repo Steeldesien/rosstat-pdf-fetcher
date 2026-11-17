@@ -1,15 +1,19 @@
-export const usesMultipart=path=>['/runner/deliver','/runner/card-upload','/runner/report-upload'].includes(path);
+export const usesMultipart=path=>['/runner/deliver','/runner/card-upload','/runner/report-upload','/runner/forecast-upload'].includes(path);
+export const receiptResult=receipt=>({status:receipt.status==='sent'?'completed':'delivery_uncertain'});
+export function validateHtmlFile(file){
+  if(typeof file?.name!=='string'||file.name.length>180||/[\/\\\x00-\x1f]/.test(file.name)||!file.name.endsWith('.html')||!(file.bytes instanceof Uint8Array)||file.bytes.length>8*1024*1024||!/^\s*<!doctype html>|^\s*<html/i.test(new TextDecoder().decode(file.bytes.slice(0,150))))throw Error('Invalid HTML report');
+}
 export class ReportFiles{
   constructor(store,send){this.store=store;this.send=send;}
   async deliver(job,key,kind,file=null){
     if(!/^[a-f0-9]{64}$/.test(key)||!['short','full'].includes(kind))throw Error('Invalid report file identity');
-    const receiptKey=`report-file-delivery:${job}:${kind}`,cacheKey=`report-file:${key}:${kind}`;
+    const receiptKey=`report-file-delivery:${job}:${kind}:${key}`,cacheKey=`report-file:${key}:${kind}`;
     const previous=await this.store.get(receiptKey);
-    if(previous)return {status:previous.status==='sent'?'completed':'delivery_uncertain'};
+    if(previous)return receiptResult(previous);
     const cached=await this.store.get(cacheKey);
     if(!cached&&!file)return {status:'needs_file'};
     if(!cached){
-      if(typeof file.name!=='string'||file.name.length>180||/[\/\\\x00-\x1f]/.test(file.name)||!file.name.endsWith('.html')||!(file.bytes instanceof Uint8Array)||file.bytes.length>8*1024*1024||!/^\s*<!doctype html>|^\s*<html/i.test(new TextDecoder().decode(file.bytes.slice(0,150))))throw Error('Invalid HTML report');
+      validateHtmlFile(file);
     }
     await this.store.put(receiptKey,{status:'sending',at:Date.now()});
     try{

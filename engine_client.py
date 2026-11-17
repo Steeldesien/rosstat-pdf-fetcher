@@ -30,17 +30,18 @@ def load_engine():
     return _loaded
 
 def _persist(root,env):
-    if env is None:return
+    if env is None:return True
     args=['git','-C',str(root)]
     subprocess.run(args+['config','user.name','rosstat-engine'],capture_output=True,check=True)
     subprocess.run(args+['config','user.email','rosstat-engine@users.noreply.github.com'],capture_output=True,check=True)
     subprocess.run(args+['add','--','data','report/out'],capture_output=True,check=True)
     diff=subprocess.run(args+['diff','--cached','--quiet'],capture_output=True)
-    if diff.returncode==0:return
+    if diff.returncode==0:return True
     subprocess.run(args+['commit','-m','Persist release calculations and reports'],capture_output=True,check=True)
     # A concurrent run must never overwrite another run's committed history.
     push=subprocess.run(args+['push','origin','HEAD:main'],env=env,capture_output=True,timeout=180)
     if push.returncode:print('Private history persistence deferred; delivered results remain cached',flush=True)
+    return push.returncode==0
 
 def analyze(broker,job,plan,known=None):
     identity={'job_id':job['id'],'run_id':broker.run_id}

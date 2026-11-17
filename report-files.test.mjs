@@ -1,5 +1,11 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {ReportFiles} from './report-files.mjs';
+test('uncertain file receipts cannot be reported as completed',async()=>{
+ const {receiptResult}=await import('./report-files.mjs');
+ assert.equal(receiptResult({status:'uncertain'}).status,'delivery_uncertain');
+ assert.equal(receiptResult({status:'sending'}).status,'delivery_uncertain');
+ assert.equal(receiptResult({status:'sent'}).status,'completed');
+});
 test('HTML upload is parsed as multipart, while report lookup is JSON',async()=>{
  const {usesMultipart}=await import('./report-files.mjs');
  assert.equal(usesMultipart('/runner/report-upload'),true);
@@ -22,4 +28,11 @@ test('unknown acknowledgements cannot trigger an automatic duplicate',async()=>{
  const input={name:'report.html',bytes:new TextEncoder().encode('<!doctype html><html>report</html>')};
  assert.equal((await files.deliver('one','a'.repeat(64),'full',input)).status,'delivery_uncertain');
  assert.equal((await files.deliver('one','a'.repeat(64),'full',input)).status,'delivery_uncertain');assert.equal(n,1);
+});
+test('a recovered commentary revision refreshes files even within the same job',async()=>{
+ const map=new Map(),sent=[],files=new ReportFiles({get:async k=>map.get(k),put:async(k,v)=>map.set(k,v)},async p=>{sent.push(p);return {document:{file_id:'revision-'+sent.length}};});
+ const file={name:'report.html',bytes:new TextEncoder().encode('<!doctype html><html>valid</html>')};
+ await files.deliver('same-job','a'.repeat(64),'short',file);
+ assert.equal((await files.deliver('same-job','b'.repeat(64),'short')).status,'needs_file');
+ await files.deliver('same-job','b'.repeat(64),'short',file);assert.equal(sent.length,2);
 });
