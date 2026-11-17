@@ -41,6 +41,19 @@ test('PDF is delivered once while analysis remains recoverable after runner rest
   assert.equal((await f.coordinator.claim(job.id,'another')).status,'completed');
 });
 
+test('private report repair reuses the same source and never redelivers the PDF',async()=>{
+  const f=fixture(),job=await f.coordinator.manual('repair','inflation','release');
+  await f.coordinator.claim(job.id,'first');
+  const item={title:'Об оценке индекса потребительских цен с 3 по 9 ноября 2026 года',url:'https://rosstat.gov.ru/a.pdf',stamp:1};
+  const bytes=new TextEncoder().encode('%PDF-test');
+  await f.coordinator.deliver(job.id,'first',bytes,item);
+  await f.coordinator.finishAnalysis(job.id,'first','cached','a'.repeat(64));
+  assert.equal(typeof f.coordinator.resumeReports,'function');
+  await f.coordinator.resumeReports(job.id);
+  const next=await f.coordinator.claim(job.id,'second');assert.equal(next.job.resume_source.url,item.url);
+  await f.coordinator.deliver(job.id,'second',bytes,item);assert.equal(f.sent.length,1);
+});
+
 test('only the matching completed analysis runner can attach a summary image',async()=>{
   const f=fixture(),job=await f.coordinator.manual(777,'inflation','release');
   await f.coordinator.claim(job.id,'runner');

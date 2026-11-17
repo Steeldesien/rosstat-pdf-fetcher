@@ -137,7 +137,7 @@ export class CoordinatorObject extends DurableObject {
         cachedHtmlReports:reports.size,htmlDeliveries:[...reportDeliveries.entries()].map(([key,v])=>({job:key.split(':')[1],kind:key.split(':')[2],status:v.status})),
         imageDeliveries:[...deliveries.entries()].map(([key,v])=>({job:key.slice('summary-card-delivery:'.length),status:v.status,format:v.format||'photo',cached:!!v.cached}))};
     }
-    if (!['manual','tick','claim','deliver','backoff','waiting','release','progress','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
+    if (!['manual','resumeReports','tick','claim','deliver','backoff','waiting','release','progress','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
     return this.coordinator[method](...args);
   }
 
@@ -322,6 +322,10 @@ export default {
           const data=await request.json();
           if (!validId(data.request_id)) return new Response('Invalid request',{status:400});
           return reply(await object.invoke('manual',[data.request_id,data.kind||'inflation',data.analysis_mode||null]));
+        }
+        if(path==='/admin/resume-reports'&&request.method==='POST'){
+          const data=await request.json();if(!validId(data.job_id))return new Response('Invalid job',{status:400});
+          return reply(await object.invoke('resumeReports',[data.job_id]));
         }
         if (path==='/admin/tick') return reply(await object.invoke('tick'));
       }

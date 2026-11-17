@@ -131,8 +131,13 @@ def entries(xml, kind):
 
 
 def check_job(job, fetch, deliver, analyze=None, progress=None):
-    found = entries(fetch(RSS), job['kind'])
-    if job['mode'] == 'latest':
+    if job.get('resume_source'):
+        item=job['resume_source'];validate_source(item['url'])
+        if not matches(item['title'],job['kind']):raise ValueError('Wrong report repair source')
+        found=[item]
+    else:found = entries(fetch(RSS), job['kind'])
+    if job.get('resume_source'):pass
+    elif job['mode'] == 'latest':
         # The catalogue complements the short RSS feed. Prefer the newest actual reporting period.
         found += catalogue_entries(fetch(CATALOGUE),job['kind'])
     else:

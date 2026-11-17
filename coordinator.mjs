@@ -219,6 +219,17 @@ export class Coordinator {
     });
   }
 
+  async resumeReports(id){
+    return this.serial(async()=>{
+      const state=await this.state(),job=state.jobs[id];
+      if(!job||job.phase!=='completed'||!job.pdfDelivered||job.kind!=='inflation'||job.analysisMode!=='release'||!job.sourceUrl)throw Error('No completed weekly report to repair');
+      const title=job.sourceTitle||job.caption?.split('\n')[0];
+      if(!title||!sourceAllowed(job.sourceUrl))throw Error('Original report source is missing');
+      job.repairOnly=true;job.sourceTitle=title;job.phase='queued';job.owner=null;job.leaseUntil=0;job.lastCheck=0;job.retryUntil=0;job.lastDispatch=0;
+      await this.save(state);return {id,queued:true};
+    });
+  }
+
   async tick() {
     return this.serial(async () => {
       const state=await this.state(), now=this.effects.now();
@@ -266,6 +277,7 @@ export class Coordinator {
       if(!job.pdfDelivered)await this.updateProgress(state,job,'search');
       const publicJob={id:job.id,kind:job.kind,mode:job.mode};
       if (job.analysisMode) publicJob.analysis_mode=job.analysisMode;
+      if(job.repairOnly)publicJob.resume_source={url:job.sourceUrl,title:job.sourceTitle,stamp:job.publicationStamp};
       if (job.mode==='scheduled') publicJob.not_before=job.not_before;
       if (job.report_end) publicJob.report_end=job.report_end;
       if (job.gdp_period) publicJob.gdp_period=job.gdp_period;
@@ -358,6 +370,7 @@ export class Coordinator {
         job.receivedStamp=Number.isFinite(item.receivedStamp)?item.receivedStamp:null;
         job.caption=result.caption||null;
         job.sourceUrl=item.url;
+        job.sourceTitle=item.title;
         if (job.targetId && !state.completed.includes(job.targetId)) state.completed.push(job.targetId);
         await this.save(state);
         return {status:'completed'};
