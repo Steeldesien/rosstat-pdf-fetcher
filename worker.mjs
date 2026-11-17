@@ -8,7 +8,7 @@ import {reportProgress} from './status-messages.mjs';
 import {generateEngineAnalysis,computedEngineSummary,engineArtifactKey,renderEngineAnalysis,validateEngineBundle} from './engine-analysis.mjs';
 import {ReportFiles,usesMultipart,receiptResult} from './report-files.mjs';
 import {ForecastJobs} from './forecast-jobs.mjs';
-import {forecastAnalysisPlan,generateForecastAnalysis} from './forecast-analysis.mjs';
+import {forecastAnalysisPlan,generateForecastAnalysis,renderForecastAnalysis} from './forecast-analysis.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
@@ -96,7 +96,7 @@ export class CoordinatorObject extends DurableObject {
       return this.forecasts.enqueue('forecast-test-'+crypto.randomUUID(),day,true);
     });
     if(method==='forecastSummary')return this.forecasts.summary();
-    if(method==='forecastAnalysisReview')return this.forecastAnalyses.review(forecastAnalysisPlan(args[0]),args[1]||'inspect');
+    if(method==='forecastAnalysisReview')return this.forecastAnalyses.review(forecastAnalysisPlan(args[0]),args[1]||'inspect',(p,raw)=>renderForecastAnalysis(p,p.engine,raw));
     if(method==='forecastClaim')return this.coordinator.serial(()=>this.forecasts.claim(...args));
     if(method==='forecastFinish')return this.coordinator.serial(()=>this.forecasts.finish(...args));
     if(method==='forecastFailure')return this.coordinator.serial(()=>this.forecasts.fail(...args));

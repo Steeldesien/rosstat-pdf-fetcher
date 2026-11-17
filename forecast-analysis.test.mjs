@@ -14,3 +14,11 @@ test('future facts and unsupported model figures cannot enter the pre-release an
  assert.throws(()=>forecastAnalysisPlan({...data,bundle:{...data.bundle,context:{asof:data.asof,history_dates:['2026-11-16']}}}),/future/i);
  await assert.rejects(generateForecastAnalysis({AI:{run:async()=>({response:{summary:'Рост 99%.',observations:[],conclusion:'Прогноз.'}})}},forecastAnalysisPlan(data)),/numeric/i);
 });
+test('known forecast metadata is safe but invented historical coverage and probability claims are dropped',async()=>{
+ const {renderForecastAnalysis}=await import('./forecast-analysis.mjs');
+ const richer={...data,bundle:{...data.bundle,facts:[...data.bundle.facts,{id:'trend',label:'Вклад',value:'+0,13 п.п.',origin:'forecast'},{id:'coverage',label:'Уровень интервала',value:'80%',origin:'forecast'}]}};
+ const plan=forecastAnalysisPlan(richer);
+ const text=renderForecastAnalysis(plan,plan.engine,{summary:'Прогноз за 10–16 ноября: {{point}}; вклад темпа {{trend}} п.п.',observations:['Исторически факт попадает в интервал в 8 из 10 случаев.','Последняя известная неделя завершилась 9 ноября.'],conclusion:'Учитывайте 80% вероятность попадания факта.'});
+ assert.match(text,/\+0,13 п.п./);assert.doesNotMatch(text,/п\.п\.\s+п\.п\./);assert.doesNotMatch(text,/8 из 10|вероятность попадания/);assert.match(text,/не гарантирует/);
+ assert.match(text,/9 ноября 2026/);
+});
