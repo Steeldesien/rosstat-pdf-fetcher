@@ -69,3 +69,8 @@ Private checkout happens only after a source PDF has arrived and an uncached cal
 
 Native engine reports represent one weekly release; existing rolling-period analysis and other statistical reports retain their own selection and calculation paths.
 
+# Pre-release delivery
+
+The private coordinator starts the Wednesday forecast at 14:00 Moscow time. The private engine preserves the original model, renders a forecast PNG and two static HTML files, and saves the forecast before delivery. The forecast is explicitly distinguished from the later Rosstat actual release.
+
+Workers AI explains only the supplied frozen forecast factors. Commentary is cached separately from actual-release analysis; successful and uncertain requests are not automatically submitted again. If commentary is unavailable, the numerical forecast and files are still delivered with that status. The PNG is rendered by code, not an image generation API. Private dry runs validate all three files and the analysis without Telegram delivery.

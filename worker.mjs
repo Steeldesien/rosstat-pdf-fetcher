@@ -8,6 +8,7 @@ import {reportProgress} from './status-messages.mjs';
 import {generateEngineAnalysis,computedEngineSummary,engineArtifactKey,renderEngineAnalysis,validateEngineBundle} from './engine-analysis.mjs';
 import {ReportFiles,usesMultipart,receiptResult} from './report-files.mjs';
 import {ForecastJobs} from './forecast-jobs.mjs';
+import {forecastAnalysisPlan,generateForecastAnalysis} from './forecast-analysis.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
@@ -68,6 +69,7 @@ export class CoordinatorObject extends DurableObject {
     });
     this.forecasts=new ForecastJobs(ctx.storage,{
       now:()=>Date.now(),
+      analyze:data=>this.forecastAnalyses.get(forecastAnalysisPlan(data)),
       dispatch:id=>github(env,'actions/workflows/forecast.yml/dispatches',{method:'POST',body:JSON.stringify({ref:'main',inputs:{forecast_id:id}})}),
       sendSummary:async text=>{
         const d=await this.coordinator.destination()||{chatId:env.TELEGRAM_CHAT_ID};
@@ -77,9 +79,11 @@ export class CoordinatorObject extends DurableObject {
         const d=await this.coordinator.destination()||{chatId:env.TELEGRAM_CHAT_ID};
         if(payload.fileId)return telegram(env,'sendDocument',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:d.chatId,...(d.threadId?{message_thread_id:d.threadId}:{}),document:payload.fileId})});
         const form=new FormData();form.append('chat_id',d.chatId);if(d.threadId)form.append('message_thread_id',String(d.threadId));
-        form.append('document',new Blob([payload.bytes],{type:'text/html'}),payload.name);return telegram(env,'sendDocument',{body:form});
+        form.append('document',new Blob([payload.bytes],{type:payload.name.endsWith('.png')?'image/png':'text/html'}),payload.name);return telegram(env,'sendDocument',{body:form});
       }
     });
+    const forecastStore={get:key=>ctx.storage.get('forecast-analysis-v1:'+key),put:(key,value)=>ctx.storage.put('forecast-analysis-v1:'+key,value)};
+    this.forecastAnalyses=new AnalysisCache(forecastStore,plan=>generateForecastAnalysis(env,plan));
   }
   async invoke(method,args=[]) {
     if(method==='tick'){
@@ -92,6 +96,7 @@ export class CoordinatorObject extends DurableObject {
       return this.forecasts.enqueue('forecast-test-'+crypto.randomUUID(),day,true);
     });
     if(method==='forecastSummary')return this.forecasts.summary();
+    if(method==='forecastAnalysisReview')return this.forecastAnalyses.review(forecastAnalysisPlan(args[0]),args[1]||'inspect');
     if(method==='forecastClaim')return this.coordinator.serial(()=>this.forecasts.claim(...args));
     if(method==='forecastFinish')return this.coordinator.serial(()=>this.forecasts.finish(...args));
     if(method==='forecastFailure')return this.coordinator.serial(()=>this.forecasts.fail(...args));
@@ -331,6 +336,7 @@ export default {
       if (admin) {
         if(path==='/admin/gemini-probe'&&request.method==='POST')return reply(await probeGemini(env));
         if(path==='/admin/forecast-summary'&&request.method==='GET')return reply(await object.invoke('forecastSummary'));
+        if(path==='/admin/forecast-analysis-review'&&request.method==='POST'){const d=await request.json();return reply(await object.invoke('forecastAnalysisReview',[d.data,d.action||'inspect']));}
         if(path==='/admin/forecast-test'&&request.method==='POST')return reply(await object.invoke('forecastTest'));
         if(path==='/admin/engine-probe'&&request.method==='POST'){
           try{return reply(await generateEngineAnalysis(env,await request.json()));}

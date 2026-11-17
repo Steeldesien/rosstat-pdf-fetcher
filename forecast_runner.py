@@ -16,10 +16,10 @@ def main():
     if not _persist(root,env):raise RuntimeError('Published forecast history could not be persisted')
     done=broker.call('forecast-finish',json={**identity,'result':result})
     if done.get('status')=='late':print('Forecast saved after publication window; no pre-release notification sent');return
-    for kind in ['short','full']:
+    for kind in ['png','short','full']:
         status=broker.call('forecast-file',json={**identity,'kind':kind})
         if status['status']=='needs_file':
-            path=files[kind];status=broker.call('forecast-upload',data={**identity,'kind':kind},files={'document':(path.name,path.read_bytes(),'text/html')})
+            path=files[kind];status=broker.call('forecast-upload',data={**identity,'kind':kind},files={'document':(path.name,path.read_bytes(),'image/png' if kind=='png' else 'text/html')})
         if status['status']!='completed':raise RuntimeError('Forecast file delivery unconfirmed')
     print('Pre-release forecast completed; dry verification:',bool(claim.get('dry')))
 
