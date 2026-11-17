@@ -31,7 +31,8 @@ export async function generateEngineAnalysis(env,plan){
   if(model!=='@cf/openai/gpt-oss-120b'||!env.AI?.run)throw Object.assign(Error('Engine analysis provider unavailable'),{retryable:true});
   let data;try{data=await env.AI.run(model,{messages:[
     {role:'system',content:'Ты аналитик инфляции. Код уже выполнил все вычисления. Верни JSON {summary:string,observations:string[],conclusion:string}. Кратко: summary до 250 символов, до трёх observations по 200 символов, conclusion до 200 символов. Любые числа разрешены ТОЛЬКО как {{id}} из facts. Нельзя самостоятельно считать, менять период или приписывать модельные оценки Росстату. Сравни динамику с сезонной нормой, отметь устойчивость и ограничения. Не придумывай причины или прогноз ставки. Оценку и прогноз называй оценкой и прогнозом. При mode не release обсуждай весь диапазон, не последнюю неделю.'},
-    {role:'user',content:JSON.stringify(bundle)}],temperature:0.1,max_tokens:4096,store:false});}
+    {role:'user',content:JSON.stringify(bundle)}],temperature:0.1,max_tokens:4096,store:false,
+    response_format:{type:'json_schema',json_schema:{type:'object',properties:{summary:{type:'string'},observations:{type:'array',items:{type:'string'},maxItems:3},conclusion:{type:'string'}},required:['summary','observations','conclusion'],additionalProperties:false}}});}
   catch(error){if(/3036|3040|5035|5028/.test(error.message||''))error.retryable=true;throw error;}
   const content=data.choices?.[0]?.message?.content??data.response;
   if(data.choices?.[0]&&data.choices[0].finish_reason!=='stop')throw Error('Incomplete engine analysis');

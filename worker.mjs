@@ -131,7 +131,9 @@ export class CoordinatorObject extends DurableObject {
     if (method==='analysisStatus') return {enabled:analysisAvailable(this.env),keyConfigured:!!this.env.GEMINI_API_KEY,provider:this.env.ANALYSIS_PROVIDER||'gemini',workersBinding:!!this.env.AI,model:this.env.ANALYSIS_PROVIDER==='workers-ai'?this.env.WORKERS_AI_MODEL:this.env.GEMINI_MODEL||null,...(this.env.ANALYSIS_PROVIDER==='workers-ai'?{workersReports:['inflation'],otherReportsProvider:'gemini'}:{})};
     if (method==='cardSummary') {
       const cache=await this.storage.list({prefix:'summary-card:'}),deliveries=await this.storage.list({prefix:'summary-card-delivery:'});
-      return {cachedImages:cache.size,sent:[...deliveries.values()].filter(v=>v.status==='sent').length,reused:[...deliveries.values()].filter(v=>v.status==='sent'&&v.cached).length};
+      const reports=await this.storage.list({prefix:'report-file:'}),reportDeliveries=await this.storage.list({prefix:'report-file-delivery:'});
+      return {cachedImages:cache.size,sent:[...deliveries.values()].filter(v=>v.status==='sent').length,reused:[...deliveries.values()].filter(v=>v.status==='sent'&&v.cached).length,
+        cachedHtmlReports:reports.size,htmlDeliveries:[...reportDeliveries.entries()].map(([key,v])=>({job:key.split(':')[1],kind:key.split(':')[2],status:v.status}))};
     }
     if (!['manual','tick','claim','deliver','backoff','waiting','release','progress','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
     return this.coordinator[method](...args);
