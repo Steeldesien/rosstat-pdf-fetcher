@@ -56,13 +56,19 @@ export class ScheduledDelivery {
     const existing=await this.store.get(MODEL_NOTE);
     if(existing&&(existing.day!==note.day||existing.version!==full.version))throw Error('A different one-time PDF is already configured');
     await this.store.put('scheduled-destinations',destinations.map(d=>d.chatId===fullId?{...d,mode:'full'}:d.chatId===pngId?{...d,mode:'actual_png'}:d));
-    if(!existing)await this.store.put(MODEL_NOTE,{...note,version:full.version,status:'pending'});
+    if(!existing||existing.status==='pending')await this.store.put(MODEL_NOTE,{...note,version:full.version,status:'pending'});
     return {day:note.day,modelNote:existing?.status??'pending'};
   }
 
   async modelNoteStatus(){
     const note=await this.store.get(MODEL_NOTE);
-    return note?{day:note.day,status:note.status}:null;
+    if(!note)return null;
+    const status={day:note.day,status:note.status};
+    if(note.bytes){
+      const digest=await crypto.subtle.digest('SHA-256',note.bytes);
+      status.sha256=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+    }
+    return status;
   }
 
   async send(id,eligible,part,deliver,notify){

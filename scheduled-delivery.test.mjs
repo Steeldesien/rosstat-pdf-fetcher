@@ -109,8 +109,10 @@ test('the configured PNG-only group receives only actual PNG, and the model note
   assert.deepEqual(sent.filter(x=>x.endsWith(':-3')),['actual:png:-3']);
   assert.equal(sent.filter(x=>x.endsWith(':-2')).length,8);
   const deliver=async (d,file)=>sent.push(`${file.name}:${d.chatId}`);
+  await route.configureModes('-2','-3',{...note,name:'updated.pdf'});
   await route.sendModelNote('forecast-2026-11-25',deliver);
   await route.sendModelNote('forecast-2026-11-18',deliver);
+  await route.configureModes('-2','-3',{...note,name:'duplicate.pdf'});
   await route.sendModelNote('forecast-2026-11-18',deliver);
-  assert.deepEqual(sent.filter(x=>x.startsWith('model')),['model.pdf:-2']);
+  assert.deepEqual(sent.filter(x=>x.endsWith('.pdf:-2')),['updated.pdf:-2']);
 });
