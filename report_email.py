@@ -60,7 +60,7 @@ def message(sender, recipients, mode, data, files):
         raise ValueError('Invalid report email mode')
     mail = EmailMessage()
     mail['From'] = sender
-    mail['To'] = 'undisclosed-recipients:;'
+    mail['To'] = ', '.join(recipients)
     mail['Date'] = formatdate(localtime=False)
     mail['Message-ID'] = make_msgid(domain=sender.rsplit('@', 1)[-1])
     mail['Subject'] = subject
@@ -80,8 +80,8 @@ def send_report(broker, identity, mode, data, files, *, eligible):
     ticket = {**identity, 'mode':mode}
     try:
         config = json.loads(raw)
-        recipients = list(dict.fromkeys(config['recipients']))
-        if not recipients:
+        recipients = json.loads(os.environ['REPORT_EMAIL_RECIPIENTS'])
+        if not isinstance(recipients, list) or not recipients:
             raise ValueError('No report email recipients configured')
         claim = broker.call('email-status', json=ticket)
         if claim['status'] != 'ready':

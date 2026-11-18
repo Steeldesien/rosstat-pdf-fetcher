@@ -21,6 +21,8 @@ class ReportEmailTests(unittest.TestCase):
             self.assertIn('+0,15%', mail.get_body().get_content())
             self.assertIn('09.11.2026', mail.get_body().get_content())
             self.assertIsNone(mail['Bcc'])
+            self.assertIsNone(mail['Cc'])
+            self.assertEqual([address.addr_spec for address in mail['To'].addresses], ['one@example.com', 'two@example.com'])
             self.assertEqual([p.get_payload(decode=True) for p in mail.iter_attachments()], [b'png', b'short', b'full'])
 
     def test_manual_and_dry_runs_do_not_load_files_or_send(self):
@@ -32,9 +34,10 @@ class ReportEmailTests(unittest.TestCase):
 
     def test_scheduled_email_uses_private_recipients_and_reserves_before_sending(self):
         broker=Mock();broker.call.side_effect=[{'status':'ready'},{'status':'reserved'},{'status':'accepted'}]
-        recipients=['one@example.com','two@example.com'];sender='sender@gmail.com'
-        settings=json.dumps({'sender':sender,'recipients':recipients,'app_password':'fixture'})
-        with tempfile.TemporaryDirectory() as folder,patch.dict('os.environ',{'REPORT_EMAIL_SMTP':settings}),patch('report_email.smtplib.SMTP_SSL') as connection:
+        recipients=['two@example.com','one@example.com'];sender='sender@gmail.com'
+        settings=json.dumps({'sender':sender,'recipients':['legacy@example.com'],'app_password':'fixture'})
+        env={'REPORT_EMAIL_SMTP':settings,'REPORT_EMAIL_RECIPIENTS':json.dumps(recipients)}
+        with tempfile.TemporaryDirectory() as folder,patch.dict('os.environ',env),patch('report_email.smtplib.SMTP_SSL') as connection:
             paths={kind:Path(folder)/filename for kind,filename in [('png','summary.png'),('short','short.html'),('full','full.html')]}
             for path in paths.values():path.write_bytes(b'report')
             smtp=connection.return_value.__enter__.return_value
@@ -43,9 +46,21 @@ class ReportEmailTests(unittest.TestCase):
                 self.assertEqual(kwargs['to_addrs'],recipients)
                 self.assertEqual(mail['Subject'],'Недельная инфляция • фактический выпуск за 27 октября — 2 ноября 2026')
                 self.assertIn('Росстата',mail.get_body().get_content())
-                self.assertNotIn(recipients[0],str(mail))
+                self.assertEqual([address.addr_spec for address in mail['To'].addresses],recipients)
+                self.assertNotIn('legacy@example.com',str(mail))
                 return {}
             smtp.send_message.side_effect=accept
             send_report(broker,{'job_id':'opaque'},'actual',{'start':'2026-10-27','end':'2026-11-02'},lambda:paths,eligible=True)
             smtp.send_message.assert_called_once()
             self.assertEqual(broker.call.call_args.kwargs['json']['status'],'accepted')
+
+    def test_missing_production_recipient_secret_never_uses_old_addresses(self):
+        broker = Mock()
+        env = {
+            'REPORT_EMAIL_SMTP': json.dumps({'recipients': ['legacy@example.com']}),
+            'REPORT_EMAIL_RECIPIENTS': '',
+        }
+        with patch.dict('os.environ', env), patch('report_email.gmail_connection') as connection:
+            send_report(broker, {}, 'actual', {}, Mock(), eligible=True)
+        broker.call.assert_not_called()
+        connection.assert_not_called()
