@@ -11,6 +11,25 @@ MONTHS = ('января', 'февраля', 'марта', 'апреля', 'ма�
 KINDS = {'png': ('image', 'png'), 'short': ('text', 'html'), 'full': ('text', 'html')}
 
 
+def gmail_connection():
+    """Try the alternate transport only before any authentication or delivery."""
+    context=ssl.create_default_context()
+    hostname='smtp.gmail.com'
+    try:
+        smtp=smtplib.SMTP_SSL(hostname,465,timeout=15,context=context)
+        smtp.port=465
+        return smtp
+    except (OSError,smtplib.SMTPServerDisconnected):
+        smtp=smtplib.SMTP(hostname,587,timeout=15)
+        try:
+            smtp.starttls(context=context)
+        except Exception:
+            smtp.close()
+            raise
+        smtp.port=587
+        return smtp
+
+
 def period(start, end):
     first, last = date.fromisoformat(start), date.fromisoformat(end)
     if first > last:
@@ -68,7 +87,7 @@ def send_report(broker, identity, mode, data, files, *, eligible):
         if claim['status'] != 'ready':
             return
         mail = message(config['sender'], recipients, mode, data, files())
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=20, context=ssl.create_default_context()) as smtp:
+        with gmail_connection() as smtp:
             smtp.login(config['sender'], config['app_password'])
             if broker.call('email-reserve', json=ticket)['status'] != 'reserved':
                 return
