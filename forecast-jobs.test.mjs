@@ -6,6 +6,14 @@ test('pre-release job is not scheduled before its time or on another day',async(
 test('forecast file delivery requires the claimed owner and correct target period',async()=>{const f=fixture();await f.jobs.tick();await f.jobs.claim('forecast-2026-11-18','owner');const data={asof:'2026-11-09',start:'2026-11-10',end:'2026-11-16',point:.147,lo80:.043,hi80:.232,model:'v2',key:'a'.repeat(64),shadow:true};await assert.rejects(f.jobs.finish('forecast-2026-11-18','other',data));await assert.rejects(f.jobs.finish('forecast-2026-11-18','owner',{...data,end:'2026-11-23'}));await f.jobs.finish('forecast-2026-11-18','owner',data);assert.equal((await f.jobs.file('forecast-2026-11-18','owner','short')).status,'needs_file');});
 test('a failed forecast can retry with a new runner after a bounded delay',async()=>{const f=fixture();await f.jobs.tick();await f.jobs.claim('forecast-2026-11-18','old');await f.jobs.fail('forecast-2026-11-18','old','RuntimeError');await f.jobs.tick();assert.equal(f.calls.length,1);f.effects.now=()=>Date.parse('2026-11-18T14:17:00+03:00');await f.jobs.tick();assert.equal(f.calls.length,2);assert.equal((await f.jobs.claim('forecast-2026-11-18','new')).status,'ready');});
 
+test('a runner killed before reporting failure is replaced once, after its timeout',async()=>{
+ const f=fixture(),id='forecast-2026-11-18';await f.jobs.tick();await f.jobs.claim(id,'aborted');
+ f.effects.now=()=>Date.parse('2026-11-18T14:24:00+03:00');await f.jobs.tick();assert.equal(f.calls.length,1);
+ f.effects.now=()=>Date.parse('2026-11-18T14:27:00+03:00');await f.jobs.tick();assert.equal(f.calls.length,2);
+ await assert.rejects(f.jobs.fail(id,'aborted','RuntimeError'),/Invalid forecast owner/);
+ await f.jobs.claim(id,'second');f.effects.now=()=>Date.parse('2026-11-18T15:00:00+03:00');await f.jobs.tick();assert.equal(f.calls.length,2);
+});
+
 test('new forecast delivery includes cached analysis and requires PNG as well as two HTML files',async()=>{
  const f=fixture();let sent='',calls=0;f.effects.analyze=async()=>{calls++;return {text:'Краткий разбор прогноза.',key:'b'.repeat(64),cached:false};};f.effects.sendSummary=async text=>{sent=text;};
  await f.jobs.tick();const id=f.calls[0];await f.jobs.claim(id,'run');

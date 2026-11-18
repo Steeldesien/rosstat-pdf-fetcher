@@ -46,7 +46,7 @@ test('a rejected group confirmation preserves the existing destination and the i
 test('an unconfirmed secondary attachment alerts the owner once and allows other files',async()=>{
   const data=new Map([['scheduled-destination',{chatId:'-2',version:'v'}]]),alerts=[];
   const route=new ScheduledDelivery({get:k=>data.get(k),put:(k,v)=>data.set(k,structuredClone(v)),delete:k=>data.delete(k)});
-  const notify=async part=>alerts.push(part);
+  const notify=async(id,part)=>alerts.push(part);
   await route.send('job',true,'summary',async()=>{},notify);
   await route.send('job',true,'png',async()=>{throw Error('Unconfirmed');},notify);
   await route.send('job',true,'png',async()=>assert.fail('Duplicate send'),notify);
@@ -54,4 +54,17 @@ test('an unconfirmed secondary attachment alerts the owner once and allows other
   assert.deepEqual(alerts,['png']);
   assert.equal(data.get('scheduled-mirror:job').png,'uncertain');
   assert.equal(data.get('scheduled-mirror:job').full,'sent');
+});
+
+test('failed owner notification survives restart and retries without resending the attachment',async()=>{
+ let now=0,attempts=0;const data=new Map([['scheduled-destination',{chatId:'-2',version:'v'}]]);
+ const store={get:k=>data.get(k),put:(k,v)=>data.set(k,structuredClone(v)),delete:k=>data.delete(k),list:({prefix})=>new Map([...data].filter(([k])=>k.startsWith(prefix)))};
+ const route=new ScheduledDelivery(store,()=>now);
+ const notify=async(id,part)=>{assert.equal(id,'job');assert.equal(part,'png');if(++attempts===1)throw Error('Telegram unavailable');};
+ await route.send('job',true,'summary',async()=>{},notify);
+ await route.send('job',true,'png',async()=>{throw Error('Unconfirmed');},notify);
+ const restarted=new ScheduledDelivery(store,()=>now);
+ await restarted.retryAlerts(notify);assert.equal(attempts,1);
+ now+=5*60*1000;await restarted.retryAlerts(notify);await restarted.retryAlerts(notify);
+ assert.equal(attempts,2);assert.equal(data.get('scheduled-mirror:job').png,'uncertain');
 });

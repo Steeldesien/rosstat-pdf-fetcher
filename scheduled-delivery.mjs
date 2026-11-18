@@ -2,6 +2,9 @@ export function scheduledRelease(job){
   return job?.kind==='inflation'&&job.mode==='scheduled'&&!!job.targetId&&!job.repairOnly;
 }
 
+const ALERT_PREFIX='scheduled-alert:';
+const ALERT_DELAYS=[5,15,30].map(minutes=>minutes*60000);
+
 export class ScheduledDelivery {
   constructor(store,now=Date.now){this.store=store;this.now=now;}
 
@@ -45,6 +48,34 @@ export class ScheduledDelivery {
     try{await deliver(chat);receipt[part]='sent';}
     catch{receipt[part]='uncertain';}
     await this.store.put(key,receipt);
-    if(receipt[part]==='uncertain')await notify(part);
+    if(receipt[part]==='uncertain'){
+      const alert={id,part,attempts:0,nextAt:this.now()};
+      const alertKey=`${ALERT_PREFIX}${id}:${part}`;
+      await this.store.put(alertKey,alert);
+      await this.tryAlert(alertKey,alert,notify);
+    }
+  }
+
+  async tryAlert(key,alert,notify){
+    if(alert.nextAt>this.now())return;
+    try{await notify(alert.id,alert.part);}
+    catch{
+      const delay=ALERT_DELAYS[alert.attempts];
+      if(delay!==undefined){
+        await this.store.put(key,{...alert,attempts:alert.attempts+1,nextAt:this.now()+delay});
+        return;
+      }
+      console.log('Scheduled delivery alert exhausted its retries');
+    }
+    await this.store.delete(key);
+  }
+
+  async retryAlerts(notify){
+    const records=await this.store.list({prefix:ALERT_PREFIX});
+    for(const [key,alert] of records){
+      if(alert.nextAt>this.now())continue;
+      await this.tryAlert(key,alert,notify);
+      break;
+    }
   }
 }

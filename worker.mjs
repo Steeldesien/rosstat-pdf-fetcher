@@ -107,12 +107,13 @@ export class CoordinatorObject extends DurableObject {
       await this.scheduledDelivery.send(id,eligible,part,async target=>{
         if(String(target.chatId)===String(primary.chatId)&&target.threadId===primary.threadId)return;
         return deliver(target);
-      },async failedPart=>{
-        const names={summary:'сообщение о выпуске и следующие за ним вложения',png:'PNG',short:'краткий HTML',full:'полный HTML'};
-        const report=id.startsWith('forecast-')?'Предварительный прогноз':'Фактический выпуск';
-        await sendText(this.env,{chatId:this.env.TELEGRAM_CHAT_ID},`${report}. Дополнительная группа: не удалось подтвердить доставку (${names[failedPart]}). Проверьте группу и права бота.`);
-      });
+      },(jobId,part)=>this.notifyScheduledFailure(jobId,part));
     }catch{console.log('Additional scheduled delivery could not be recorded');}
+  }
+  notifyScheduledFailure(id,part){
+    const names={summary:'сообщение о выпуске и следующие за ним вложения',png:'PNG',short:'краткий HTML',full:'полный HTML'};
+    const report=id.startsWith('forecast-')?'Предварительный прогноз':'Фактический выпуск';
+    return sendText(this.env,{chatId:this.env.TELEGRAM_CHAT_ID},`${report}. Дополнительная группа: не удалось подтвердить доставку (${names[part]}). Проверьте группу и права бота.`);
   }
   async mirrorDocument(id,eligible,part,primary,result,payload){
     const fileId=result.document?.file_id;
@@ -125,7 +126,10 @@ export class CoordinatorObject extends DurableObject {
     if(method==='scheduledDisconnect')return this.coordinator.serial(()=>this.scheduledDelivery.disconnect());
     if(method==='tick'){
       if(this.env.PRE_RELEASE_FORECAST_ENABLED==='true')await this.coordinator.serial(()=>this.forecasts.tick());
-      return this.coordinator.tick();
+      const result=await this.coordinator.tick();
+      try{await this.coordinator.serial(()=>this.scheduledDelivery.retryAlerts((id,part)=>this.notifyScheduledFailure(id,part)));}
+      catch{console.log('Could not process pending scheduled delivery alerts');}
+      return result;
     }
     if(method==='forecastTest')return this.coordinator.serial(()=>{
       const local=new Date(Date.now()+3*3600000),offset=(3-local.getUTCDay()+7)%7+(local.getUTCDay()===3&&local.getUTCHours()>=19?7:0);

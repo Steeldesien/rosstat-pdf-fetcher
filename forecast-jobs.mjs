@@ -1,6 +1,8 @@
 import {ReportFiles,validateReportFile} from './report-files.mjs';
 const date=s=>typeof s==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(s)&&Number.isFinite(Date.parse(s));
 const pct=n=>(n>=0?'+':'')+n.toFixed(2).replace('.',',')+'%';
+// GitHub allows a 20-minute run. Reserve five extra minutes before replacing it.
+const STALE_RUN=25*60*1000;
 export class ForecastJobs{
   constructor(store,effects){this.store=store;this.effects=effects;}
   async tick(){
@@ -9,8 +11,13 @@ export class ForecastJobs{
     const day=local.toISOString().slice(0,10),id='forecast-'+day;
     const existing=await this.store.get('forecast-job:'+id);
     if(existing){
-      if(['failed','dispatch_uncertain'].includes(existing.status)&&(existing.attempts||1)<2&&now-(existing.lastDispatch||existing.createdAt)>=15*60000){
-        existing.owner=null;existing.status='queued';existing.attempts=(existing.attempts||1)+1;existing.lastDispatch=now;await this.store.put('forecast-job:'+id,existing);
+      const dispatchedAt=existing.lastDispatch??existing.createdAt;
+      const reportedFailure=['failed','dispatch_uncertain'].includes(existing.status)&&now-dispatchedAt>=15*60000;
+      const staleRun=['queued','running','files'].includes(existing.status)&&now-(existing.claimedAt??dispatchedAt)>=STALE_RUN;
+      if((reportedFailure||staleRun)&&(existing.attempts||1)<2){
+        existing.owner=null;existing.status='queued';existing.attempts=(existing.attempts||1)+1;existing.lastDispatch=now;
+        delete existing.claimedAt;
+        await this.store.put('forecast-job:'+id,existing);
         try{await this.effects.dispatch(id);}catch{existing.status='dispatch_uncertain';await this.store.put('forecast-job:'+id,existing);}
         return {id,scheduled:true};
       }
@@ -28,9 +35,10 @@ export class ForecastJobs{
   async claim(id,owner){
     const job=await this.store.get('forecast-job:'+id);
     if(!job)throw Error('Unknown forecast job');
-    if(job.status==='completed'||job.status==='late')return {status:'completed'};
+    if(['completed','late','needs_review'].includes(job.status))return {status:'completed'};
+    if(!job.dry&&this.effects.now()>=job.cutoff){job.status='late';await this.store.put('forecast-job:'+id,job);return {status:'completed'};}
     if(job.owner&&job.owner!==owner)throw Error('Forecast job is already owned');
-    job.owner=owner;job.status='running';await this.store.put('forecast-job:'+id,job);
+    job.owner=owner;job.claimedAt??=this.effects.now();job.status='running';await this.store.put('forecast-job:'+id,job);
     return {status:'ready',expected_end:job.expected_end,dry:job.dry};
   }
   async access(id,owner){const job=await this.store.get('forecast-job:'+id);if(!job||job.owner!==owner)throw Error('Invalid forecast owner');return job;}
@@ -38,6 +46,7 @@ export class ForecastJobs{
   async finish(id,owner,data){
     const job=await this.access(id,owner);
     if(!date(data.asof)||!date(data.start)||!date(data.end)||data.end!==job.expected_end||data.asof>=data.start||data.start>data.end||!['v1','v2'].includes(data.model)||![data.point,data.lo80,data.hi80].every(n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<100)||data.lo80>data.hi80||!/^[a-f0-9]{64}$/.test(data.key))throw Error('Invalid forecast period or values');
+    if(job.result&&job.result.key!==data.key)throw Error('Forecast differs from the previously prepared result');
     job.result={format:data.format===2?2:1,asof:data.asof,start:data.start,end:data.end,point:data.point,lo80:data.lo80,hi80:data.hi80,model:data.model,key:data.key,shadow:!!data.shadow};
     if(this.effects.now()>=job.cutoff&&!job.dry){job.status='late';await this.store.put('forecast-job:'+id,job);return {status:'late'};}
     if(data.format===2&&!job.analysis){
@@ -47,6 +56,7 @@ export class ForecastJobs{
       await this.store.put('forecast-job:'+id,job);
     }
     if(this.effects.now()>=job.cutoff&&!job.dry){job.status='late';await this.store.put('forecast-job:'+id,job);return {status:'late'};}
+    if(job.summary==='sending')job.summary='uncertain';
     if(!job.summary){
       job.summary=job.dry?'dry':'sending';await this.store.put('forecast-job:'+id,job);
       if(!job.dry){
