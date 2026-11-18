@@ -1,4 +1,5 @@
 """Send the same three weekly artifacts through a privately configured SMTP account."""
+import base64
 import json
 import os
 import smtplib
@@ -41,7 +42,20 @@ def period(start, end):
     return f'{first:%d.%m.%Y} — {last:%d.%m.%Y}'
 
 
-def message(sender, recipients, mode, data, files):
+def forecast_model_note(job_id, mode):
+    target = os.environ.get('REPORT_EMAIL_MODEL_NOTE_JOB')
+    if mode != 'forecast' or not target or job_id != target:
+        return None
+    parts = [os.environ.get(f'REPORT_EMAIL_MODEL_NOTE_{index}', '') for index in range(1, 4)]
+    if not all(parts):
+        raise ValueError('Forecast model PDF configuration is incomplete')
+    pdf = base64.b64decode(''.join(parts), validate=True)
+    if not pdf.startswith(b'%PDF-'):
+        raise ValueError('Invalid forecast model PDF')
+    return pdf
+
+
+def message(sender, recipients, mode, data, files, *, model_note=None):
     if not recipients:
         raise ValueError('No report email recipients configured')
     span = period(data['start'], data['end'])
@@ -64,12 +78,17 @@ def message(sender, recipients, mode, data, files):
     mail['Date'] = formatdate(localtime=False)
     mail['Message-ID'] = make_msgid(domain=sender.rsplit('@', 1)[-1])
     mail['Subject'] = subject
-    mail.set_content('Коллеги, добрый день!\n\n' + body + '\n\nВо вложениях — PNG-карточка, краткий и полный отчёты в HTML.\n\nАвтоматическая рассылка по недельной инфляции.')
+    attachments = 'Во вложениях — PNG-карточка, краткий и полный отчёты в HTML.'
+    if model_note is not None:
+        attachments += ' Также прилагаем описание модели прогноза в PDF.'
+    mail.set_content('Коллеги, добрый день!\n\n' + body + '\n\n' + attachments + '\n\nАвтоматическая рассылка по недельной инфляции.')
     for kind, (main, sub) in KINDS.items():
         path = files[kind]
         if path.suffix.lower() != '.' + sub:
             raise ValueError('Unexpected report attachment type')
         mail.add_attachment(path.read_bytes(), maintype=main, subtype=sub, filename=path.name)
+    if model_note is not None:
+        mail.add_attachment(model_note, maintype='application', subtype='pdf', filename='Модель прогноза недельной инфляции.pdf')
     return mail
 
 
@@ -86,7 +105,8 @@ def send_report(broker, identity, mode, data, files, *, eligible):
         claim = broker.call('email-status', json=ticket)
         if claim['status'] != 'ready':
             return
-        mail = message(config['sender'], recipients, mode, data, files())
+        note = forecast_model_note(identity.get('job_id'), mode)
+        mail = message(config['sender'], recipients, mode, data, files(), model_note=note)
         with gmail_connection() as smtp:
             smtp.login(config['sender'], config['app_password'])
             if broker.call('email-reserve', json=ticket)['status'] != 'reserved':

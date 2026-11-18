@@ -1,10 +1,11 @@
 import tempfile
 import unittest
+import base64
 import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from report_email import message, send_report
+from report_email import forecast_model_note, message, send_report
 
 
 class ReportEmailTests(unittest.TestCase):
@@ -24,6 +25,28 @@ class ReportEmailTests(unittest.TestCase):
             self.assertIsNone(mail['Cc'])
             self.assertEqual([address.addr_spec for address in mail['To'].addresses], ['one@example.com', 'two@example.com'])
             self.assertEqual([p.get_payload(decode=True) for p in mail.iter_attachments()], [b'png', b'short', b'full'])
+            with_note = message('sender@example.com', ['one@example.com'], 'forecast',
+                                {'start':'2026-11-10','end':'2026-11-16','asof':'2026-11-09','point':0.147,'lo80':0.043,'hi80':0.232},
+                                files, model_note=b'%PDF-fixture')
+            attachments = list(with_note.iter_attachments())
+            self.assertEqual(len(attachments), 4)
+            self.assertEqual(attachments[-1].get_content_type(), 'application/pdf')
+            self.assertEqual(attachments[-1].get_payload(decode=True), b'%PDF-fixture')
+            self.assertIn('описание модели', with_note.get_body().get_content())
+
+    def test_only_the_designated_forecast_can_attach_the_model_note(self):
+        pdf = b'%PDF-fixture'
+        data = base64.b64encode(pdf).decode()
+        job = 'forecast-2026-11-18'
+        env = {'REPORT_EMAIL_MODEL_NOTE_JOB': job,
+               **{f'REPORT_EMAIL_MODEL_NOTE_{i}': part for i, part in enumerate((data[:4], data[4:8], data[8:]), 1)}}
+        with patch.dict('os.environ', env):
+            self.assertEqual(forecast_model_note(job, 'forecast'), pdf)
+            self.assertIsNone(forecast_model_note(job, 'actual'))
+            self.assertIsNone(forecast_model_note('forecast-2026-11-25', 'forecast'))
+        with patch.dict('os.environ', {'REPORT_EMAIL_MODEL_NOTE_JOB': job}, clear=True):
+            with self.assertRaises(ValueError):
+                forecast_model_note(job, 'forecast')
 
     def test_manual_and_dry_runs_do_not_load_files_or_send(self):
         broker=Mock();files=Mock(side_effect=AssertionError('Attempt to render test email'))

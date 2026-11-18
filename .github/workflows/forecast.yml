@@ -35,6 +35,10 @@ jobs:
           FORECAST_ID: ${{ inputs.forecast_id }}
           REPORT_EMAIL_SMTP: ${{ vars.REPORT_EMAIL_ENABLED == 'true' && secrets.REPORT_EMAIL_SMTP || '' }}
           REPORT_EMAIL_RECIPIENTS: ${{ secrets.REPORT_EMAIL_RECIPIENTS }}
+          REPORT_EMAIL_MODEL_NOTE_JOB: ${{ secrets.REPORT_EMAIL_MODEL_NOTE_JOB }}
+          REPORT_EMAIL_MODEL_NOTE_1: ${{ inputs.forecast_id == secrets.REPORT_EMAIL_MODEL_NOTE_JOB && secrets.REPORT_EMAIL_MODEL_NOTE_1 || '' }}
+          REPORT_EMAIL_MODEL_NOTE_2: ${{ inputs.forecast_id == secrets.REPORT_EMAIL_MODEL_NOTE_JOB && secrets.REPORT_EMAIL_MODEL_NOTE_2 || '' }}
+          REPORT_EMAIL_MODEL_NOTE_3: ${{ inputs.forecast_id == secrets.REPORT_EMAIL_MODEL_NOTE_JOB && secrets.REPORT_EMAIL_MODEL_NOTE_3 || '' }}
           BROKER_URL: ${{ secrets.BROKER_URL }}
           BROKER_TOKEN: ${{ secrets.BROKER_TOKEN }}
           INFLATION_ENGINE_REPOSITORY: ${{ vars.INFLATION_ENGINE_REPOSITORY }}
