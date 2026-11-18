@@ -10,6 +10,7 @@ import {ReportFiles,usesMultipart,receiptResult} from './report-files.mjs';
 import {ForecastJobs} from './forecast-jobs.mjs';
 import {forecastAnalysisPlan,generateForecastAnalysis,renderForecastAnalysis} from './forecast-analysis.mjs';
 import {publishSource,publishNarrative} from './report-delivery.mjs';
+import {ScheduledDelivery,scheduledRelease} from './scheduled-delivery.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
@@ -36,10 +37,26 @@ async function telegram(env, method, options, timeout=85000) {
   return result.result;
 }
 
+function sendText(env,destination,text){
+  return telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{}),text,
+    link_preview_options:{is_disabled:true}})},10000);
+}
+
+function sendReportDocument(env,destination,payload,timeout=85000){
+  const target={chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{})};
+  if(payload.fileId)return telegram(env,'sendDocument',{headers:{'Content-Type':'application/json'},body:JSON.stringify({...target,document:payload.fileId})},timeout);
+  const form=new FormData();
+  for(const [key,value] of Object.entries(target))form.append(key,String(value));
+  form.append('document',new Blob([payload.bytes],{type:payload.name.endsWith('.png')?'image/png':'text/html'}),payload.name);
+  return telegram(env,'sendDocument',{body:form},timeout);
+}
+
 export class CoordinatorObject extends DurableObject {
   constructor(ctx,env) {
     super(ctx,env);
     this.storage=ctx.storage;this.env=env;
+    this.scheduledDelivery=new ScheduledDelivery(ctx.storage);
     this.agyAuth=new AgyAuth(ctx.storage);
     this.analyses=new AnalysisCache(ctx.storage,plan=>{
       if(engineEnabled(env,plan))return generateEngineAnalysis(env,plan);
@@ -58,30 +75,49 @@ export class CoordinatorObject extends DurableObject {
       dispatch:id=>github(env,'actions/workflows/download.yml/dispatches',{
         method:'POST',body:JSON.stringify({ref:'main',inputs:{job_id:id}})
       }),
-      send:async(bytes,item,mode)=>{
+      send:async(bytes,item,mode,job)=>{
         const destination=await ctx.storage.get('destination')||{chatId:env.TELEGRAM_CHAT_ID};
-        return publishSource({artifactsOnly:env.REPORT_ARTIFACTS_ONLY==='true',transport:(method,options)=>telegram(env,method,options),destination,bytes,item,mode});
+        const result=await publishSource({artifactsOnly:env.REPORT_ARTIFACTS_ONLY==='true',transport:(method,options)=>telegram(env,method,options),destination,bytes,item,mode});
+        await this.mirror(job.id,scheduledRelease(job),'summary',destination,d=>sendText(env,d,deliveryCaption(item,mode)));
+        return result;
       }
     });
     this.forecasts=new ForecastJobs(ctx.storage,{
       now:()=>Date.now(),
       analyze:data=>this.forecastAnalyses.get(forecastAnalysisPlan(data)),
       dispatch:id=>github(env,'actions/workflows/forecast.yml/dispatches',{method:'POST',body:JSON.stringify({ref:'main',inputs:{forecast_id:id}})}),
-      sendSummary:async text=>{
+      sendSummary:async(text,job)=>{
         const d=await this.coordinator.destination()||{chatId:env.TELEGRAM_CHAT_ID};
-        return telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:d.chatId,...(d.threadId?{message_thread_id:d.threadId}:{}),text})});
+        const result=await sendText(env,d,text);
+        await this.mirror(job.id,!job.dry,'summary',d,target=>sendText(env,target,text));
+        return result;
       },
-      sendFile:async payload=>{
+      sendFile:async(payload,job,kind)=>{
         const d=await this.coordinator.destination()||{chatId:env.TELEGRAM_CHAT_ID};
-        if(payload.fileId)return telegram(env,'sendDocument',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:d.chatId,...(d.threadId?{message_thread_id:d.threadId}:{}),document:payload.fileId})});
-        const form=new FormData();form.append('chat_id',d.chatId);if(d.threadId)form.append('message_thread_id',String(d.threadId));
-        form.append('document',new Blob([payload.bytes],{type:payload.name.endsWith('.png')?'image/png':'text/html'}),payload.name);return telegram(env,'sendDocument',{body:form});
+        const result=await sendReportDocument(env,d,payload);
+        await this.mirrorDocument(job.id,!job.dry,kind,d,result,payload);
+        return result;
       }
     });
     const forecastStore={get:key=>ctx.storage.get('forecast-analysis-v1:'+key),put:(key,value)=>ctx.storage.put('forecast-analysis-v1:'+key,value)};
     this.forecastAnalyses=new AnalysisCache(forecastStore,plan=>generateForecastAnalysis(env,plan));
   }
+  async mirror(id,eligible,part,primary,deliver){
+    try{
+      await this.scheduledDelivery.send(id,eligible,part,async target=>{
+        if(String(target.chatId)===String(primary.chatId)&&target.threadId===primary.threadId)return;
+        return deliver(target);
+      });
+    }catch{console.log('Additional scheduled delivery could not be recorded');}
+  }
+  async mirrorDocument(id,eligible,part,primary,result,payload){
+    const fileId=result.document?.file_id;
+    return this.mirror(id,eligible,part,primary,d=>sendReportDocument(this.env,d,fileId?{fileId}:payload,12000));
+  }
   async invoke(method,args=[]) {
+    if(method==='scheduledInvite')return this.coordinator.serial(()=>this.scheduledDelivery.invite());
+    if(method==='scheduledConnect')return this.coordinator.serial(()=>this.scheduledDelivery.connect(...args));
+    if(method==='scheduledDisconnect')return this.coordinator.serial(()=>this.scheduledDelivery.disconnect());
     if(method==='tick'){
       if(this.env.PRE_RELEASE_FORECAST_ENABLED==='true')await this.coordinator.serial(()=>this.forecasts.tick());
       return this.coordinator.tick();
@@ -107,15 +143,13 @@ export class CoordinatorObject extends DurableObject {
     }
     if(method==='reportFile'){
       const [id,owner,key,kind,file]=args;
-      await this.coordinator.cardAccess(id,owner,key);
+      const selection=await this.coordinator.cardAccess(id,owner,key);
       return this.coordinator.serial(async()=>{
         const files=new ReportFiles(this.storage,async payload=>{
           const destination=await this.coordinator.destination()||{chatId:this.env.TELEGRAM_CHAT_ID};
-          if(payload.fileId)return telegram(this.env,'sendDocument',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{}),document:payload.fileId})});
-          const form=new FormData();form.append('chat_id',destination.chatId);
-          if(destination.threadId)form.append('message_thread_id',String(destination.threadId));
-          form.append('document',new Blob([payload.bytes],{type:'text/html'}),payload.name);
-          return telegram(this.env,'sendDocument',{body:form});
+          const result=await sendReportDocument(this.env,destination,payload);
+          await this.mirrorDocument(id,scheduledRelease(selection.mirrorJob),kind,destination,result,payload);
+          return result;
         });
         try{return await files.deliver(id,key,kind,file);}
         catch(error){
@@ -245,6 +279,7 @@ export class CoordinatorObject extends DurableObject {
           result=await telegram(this.env,documentPng?'sendDocument':'sendPhoto',{body:form});
         }
         const fileId=documentPng?result.document?.file_id:result.photo?.at(-1)?.file_id;
+        if(documentPng)await this.mirrorDocument(id,scheduledRelease(selection.mirrorJob),'png',destination,result,cached?{fileId:cached.fileId}:{bytes,name});
         if(fileId)await this.storage.put(cacheKey,{fileId,createdAt:Date.now()});
         await this.storage.put(deliveryKey,{status:'sent',at:Date.now(),cached:!!cached,messageId:result.message_id,...(documentPng?{format:'png-document'}:{})});
         return {status:'completed'};
@@ -276,6 +311,28 @@ export default {
       if (path==='/telegram') {
         const update=await request.json();
         if (update.update_id<Number(env.MIN_UPDATE_ID||0)) return new Response('OK');
+        const message=update.message,chat=message?.chat;
+        const command=message?.text?.match(/^\/(invite_reports|disconnect_reports|connect)(?:@([a-z0-9_]+))?(?:\s+([a-f0-9]{32}))?\s*$/i);
+        if(command&&(!command[2]||command[2].toLowerCase()===env.BOT_USERNAME?.replace(/^@/,'').toLowerCase())){
+          const name=command[1].toLowerCase(),code=command[3];
+          const isOwner=chat?.type==='private'&&String(message.from?.id)===String(env.TELEGRAM_CHAT_ID)&&String(chat.id)===String(env.TELEGRAM_CHAT_ID);
+          if(isOwner&&name==='invite_reports'&&!code){
+            const invite=await object.invoke('scheduledInvite');
+            await sendText(env,{chatId:chat.id},`Код действует 30 минут и используется один раз. Передайте эту команду тому, кто добавит бота в группу:\n\n/connect@${env.BOT_USERNAME.replace(/^@/,'')} ${invite}`);
+            return new Response('OK');
+          }
+          if(isOwner&&name==='disconnect_reports'&&!code){
+            await object.invoke('scheduledDisconnect');
+            await sendText(env,{chatId:chat.id},'Дополнительная группа отключена.');
+            return new Response('OK');
+          }
+          if(name==='connect'&&code&&['group','supergroup'].includes(chat?.type)){
+            const target={type:chat.type,chatId:String(chat.id),threadId:message.message_thread_id};
+            const connected=await object.invoke('scheduledConnect',[code.toLowerCase(),target]);
+            if(connected)await sendText(env,target,'Группа подключена к автоматической рассылке недельной инфляции. Здесь будут приходить предварительный прогноз и фактический выпуск по расписанию.');
+            return new Response('OK');
+          }
+        }
         if (connectionTarget(update,env.TELEGRAM_CHAT_ID,env.BOT_USERNAME)) {
           const connected=await object.invoke('connect',[update,env.TELEGRAM_CHAT_ID,env.BOT_USERNAME||'']);
           if (!connected.replay) {

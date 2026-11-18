@@ -51,7 +51,7 @@ export class ForecastJobs{
       job.summary=job.dry?'dry':'sending';await this.store.put('forecast-job:'+id,job);
       if(!job.dry){
         const text=`Предварительный прогноз инфляции · ${data.start} — ${data.end}\n\nОжидаемый прирост: ${pct(data.point)}. Интервал прогноза 80%: ${pct(data.lo80)} … ${pct(data.hi80)}.\n\nДанные по ${data.asof}. Это прогноз до публикации Росстата; вечером будет сопоставление с фактом.`;
-        try{await this.effects.sendSummary(text);job.summary='sent';}catch{job.summary='uncertain';}
+        try{await this.effects.sendSummary(text,job);job.summary='sent';}catch{job.summary='uncertain';}
       }
     }
     job.status='files';await this.store.put('forecast-job:'+id,job);return {status:'computed',dry:job.dry,analysisStatus:job.analysis?.status||'disabled'};
@@ -66,7 +66,7 @@ export class ForecastJobs{
       result={status:'completed'};
     }else{
       if(this.effects.now()>=job.cutoff){job.status='late';await this.store.put('forecast-job:'+id,job);return {status:'late'};}
-      const files=new ReportFiles(this.store,payload=>this.effects.sendFile(payload));
+      const files=new ReportFiles(this.store,payload=>this.effects.sendFile(payload,job,kind));
       result=await files.deliver(id,job.result.key,kind,file);
       if(result.status==='completed')job.files={...job.files,[kind]:{status:'sent'}};
     }

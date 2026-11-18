@@ -366,7 +366,7 @@ export class Coordinator {
       await this.updateProgress(state,job,'loaded');
       job.phase='sending'; await this.save(state);
       try {
-        const result=await this.effects.send(bytes,item,job.mode);
+        const result=await this.effects.send(bytes,item,job.mode,job);
         job.phase=job.analysisMode?'running':'completed'; job.pdfDelivered=true;job.messageId=result.message_id; job.deliveredAt=this.effects.now();
         job.sourceOnly=!!result.source_only;job.pdfPublished=!job.sourceOnly;
         job.fileName=result.document?.file_name||null;
@@ -411,7 +411,7 @@ export class Coordinator {
   async cardAccess(id,owner,key) {
     const state=await this.state(),job=state.jobs[id];
     if (!job || job.owner!==owner || job.phase!=='completed' || !job.analysisKey || job.analysisKey!==key) throw Error('Invalid card delivery');
-    return {kind:job.kind,mode:job.analysisMode};
+    return {kind:job.kind,mode:job.analysisMode,mirrorJob:job};
   }
 
   async importCompleted(ids) {
