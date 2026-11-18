@@ -201,7 +201,8 @@ class Broker:
         self.client.headers['Authorization'] = 'Bearer ' + os.environ['BROKER_TOKEN']
 
     def call(self, path, **kwargs):
-        response = self.client.post(self.base + '/runner/' + path, timeout=(15, 240 if path in ('analyze','forecast-finish') else 90), allow_redirects=False, **kwargs)
+        timeout=240 if path in ('analyze','forecast-finish') else 120
+        response = self.client.post(self.base + '/runner/' + path, timeout=(15,timeout), allow_redirects=False, **kwargs)
         if not response.ok:
             raise RuntimeError('Private delivery broker rejected the request')
         return response.json()

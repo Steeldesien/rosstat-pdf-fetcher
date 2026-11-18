@@ -40,7 +40,7 @@ def _persist(root,env):
     subprocess.run(args+['commit','-m','Persist release calculations and reports'],capture_output=True,check=True)
     # A concurrent run must never overwrite another run's committed history.
     push=subprocess.run(args+['push','origin','HEAD:main'],env=env,capture_output=True,timeout=180)
-    if push.returncode:print('Private history persistence deferred; delivered results remain cached',flush=True)
+    if push.returncode:print('Could not push private history',flush=True)
     return push.returncode==0
 
 def analyze(broker,job,plan,known=None):
@@ -59,6 +59,8 @@ def analyze(broker,job,plan,known=None):
             loaded=load_engine();module,root,_=loaded
             with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
                 report,bundle=module.prepare(plan,known or {})
+            if not _persist(loaded[1],loaded[2]):
+                raise RuntimeError('Forecast assessment could not be saved to private history')
         finally:stopped.set();keeper.join(timeout=1)
         plan={**plan,'engine':bundle}
     result=broker.call('analyze',json={**identity,'plan':plan})
@@ -75,6 +77,8 @@ def analyze(broker,job,plan,known=None):
             loaded=load_engine()
             with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
                 report,_=loaded[0].prepare(plan,known or {})
+            if not _persist(loaded[1],loaded[2]):
+                raise RuntimeError('Forecast assessment could not be saved to private history')
         with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
             files=loaded[0].render_artifacts(plan,report,card['text'])
         for kind,status in statuses.items():

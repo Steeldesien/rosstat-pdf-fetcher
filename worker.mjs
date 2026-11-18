@@ -107,6 +107,10 @@ export class CoordinatorObject extends DurableObject {
       await this.scheduledDelivery.send(id,eligible,part,async target=>{
         if(String(target.chatId)===String(primary.chatId)&&target.threadId===primary.threadId)return;
         return deliver(target);
+      },async failedPart=>{
+        const names={summary:'сообщение о выпуске и следующие за ним вложения',png:'PNG',short:'краткий HTML',full:'полный HTML'};
+        const report=id.startsWith('forecast-')?'Предварительный прогноз':'Фактический выпуск';
+        await sendText(this.env,{chatId:this.env.TELEGRAM_CHAT_ID},`${report}. Дополнительная группа: не удалось подтвердить доставку (${names[failedPart]}). Проверьте группу и права бота.`);
       });
     }catch{console.log('Additional scheduled delivery could not be recorded');}
   }
@@ -116,7 +120,8 @@ export class CoordinatorObject extends DurableObject {
   }
   async invoke(method,args=[]) {
     if(method==='scheduledInvite')return this.coordinator.serial(()=>this.scheduledDelivery.invite());
-    if(method==='scheduledConnect')return this.coordinator.serial(()=>this.scheduledDelivery.connect(...args));
+    if(method==='scheduledConnect')return this.coordinator.serial(()=>this.scheduledDelivery.connect(...args,target=>sendText(this.env,target,
+      'Группа подключена к автоматической рассылке недельной инфляции. Здесь будут приходить предварительный прогноз и фактический выпуск по расписанию.')));
     if(method==='scheduledDisconnect')return this.coordinator.serial(()=>this.scheduledDelivery.disconnect());
     if(method==='tick'){
       if(this.env.PRE_RELEASE_FORECAST_ENABLED==='true')await this.coordinator.serial(()=>this.forecasts.tick());
@@ -328,8 +333,11 @@ export default {
           }
           if(name==='connect'&&code&&['group','supergroup'].includes(chat?.type)){
             const target={type:chat.type,chatId:String(chat.id),threadId:message.message_thread_id};
-            const connected=await object.invoke('scheduledConnect',[code.toLowerCase(),target]);
-            if(connected)await sendText(env,target,'Группа подключена к автоматической рассылке недельной инфляции. Здесь будут приходить предварительный прогноз и фактический выпуск по расписанию.');
+            try{await object.invoke('scheduledConnect',[code.toLowerCase(),target]);}
+            catch{
+              try{await sendText(env,{chatId:env.TELEGRAM_CHAT_ID},'Не удалось подтвердить подключение дополнительной группы. Проверьте право бота отправлять сообщения и повторите команду с тем же кодом, пока он действует.');}
+              catch{console.log('Group connection failure alert could not be sent');}
+            }
             return new Response('OK');
           }
         }

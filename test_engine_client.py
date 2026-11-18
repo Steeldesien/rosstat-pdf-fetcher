@@ -3,6 +3,19 @@ from unittest.mock import Mock,patch
 import engine_client as e
 
 class EngineClientTests(unittest.TestCase):
+    def test_forecast_history_is_saved_even_if_first_attachment_fails(self):
+        broker=Mock();broker.run_id='run';engine=Mock();engine.prepare.return_value=({}, {})
+        events=[]
+        def call(path,**kwargs):
+            if path=='engine-status':return {'enabled':True,'status':'missing'}
+            if path=='analyze':return {'card':{'key':'a'*64,'text':'report'}}
+            events.append(path)
+            raise RuntimeError('Telegram unavailable')
+        broker.call.side_effect=call
+        with patch.object(e,'load_engine',return_value=(engine,'repo','env')),patch.object(e,'_persist',side_effect=lambda *args:events.append('persist') or True):
+            with self.assertRaisesRegex(RuntimeError,'Telegram unavailable'):
+                e.analyze(broker,{'id':'job'},{'kind':'inflation','mode':'release'})
+        self.assertEqual(events,['persist','card'])
     def test_pinned_old_issue_is_not_replaced_by_newer_private_archive_entries(self):
         import runner,analysis
         from unittest.mock import patch

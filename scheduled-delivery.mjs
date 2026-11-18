@@ -11,11 +11,12 @@ export class ScheduledDelivery {
     return code;
   }
 
-  async connect(code,chat){
+  async connect(code,chat,confirm){
     if(!['group','supergroup'].includes(chat.type))return false;
     const invite=await this.store.get('scheduled-invite');
     if(!invite||invite.expires<=this.now()||invite.code!==code)return false;
     const {chatId,threadId}=chat;
+    await confirm({chatId,threadId});
     await this.store.put('scheduled-destination',{chatId,...(threadId?{threadId}:{}),version:crypto.randomUUID()});
     await this.store.delete('scheduled-invite');
     return true;
@@ -26,7 +27,7 @@ export class ScheduledDelivery {
     await this.store.delete('scheduled-invite');
   }
 
-  async send(id,eligible,part,deliver){
+  async send(id,eligible,part,deliver,notify){
     if(!eligible)return;
     const destination=await this.store.get('scheduled-destination');
     if(!destination)return;
@@ -44,5 +45,6 @@ export class ScheduledDelivery {
     try{await deliver(chat);receipt[part]='sent';}
     catch{receipt[part]='uncertain';}
     await this.store.put(key,receipt);
+    if(receipt[part]==='uncertain')await notify(part);
   }
 }
