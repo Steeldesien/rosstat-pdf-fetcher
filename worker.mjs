@@ -48,7 +48,8 @@ function sendReportDocument(env,destination,payload,timeout=85000){
   if(payload.fileId)return telegram(env,'sendDocument',{headers:{'Content-Type':'application/json'},body:JSON.stringify({...target,document:payload.fileId})},timeout);
   const form=new FormData();
   for(const [key,value] of Object.entries(target))form.append(key,String(value));
-  form.append('document',new Blob([payload.bytes],{type:payload.name.endsWith('.png')?'image/png':'text/html'}),payload.name);
+  const type=payload.name.endsWith('.png')?'image/png':payload.name.endsWith('.pdf')?'application/pdf':'text/html';
+  form.append('document',new Blob([payload.bytes],{type}),payload.name);
   return telegram(env,'sendDocument',{body:form},timeout);
 }
 
@@ -96,6 +97,11 @@ export class CoordinatorObject extends DurableObject {
         const d=await this.coordinator.destination()||{chatId:env.TELEGRAM_CHAT_ID};
         const result=await sendReportDocument(env,d,payload);
         await this.mirrorDocument(job.id,!job.dry,kind,d,result,payload);
+        if(!job.dry&&kind==='full'){
+          try{await this.scheduledDelivery.sendModelNote(job.id,(target,file)=>sendReportDocument(env,target,file,12000),
+            (id,part,chat)=>this.notifyScheduledFailure(id,part,chat));}
+          catch{console.log('Could not record one-time model note delivery');}
+        }
         return result;
       }
     });
@@ -111,7 +117,7 @@ export class CoordinatorObject extends DurableObject {
     }catch{console.log('Additional scheduled delivery could not be recorded');}
   }
   notifyScheduledFailure(id,part,chat){
-    const names={summary:'сообщение о выпуске и следующие за ним вложения',png:'PNG',short:'краткий HTML',full:'полный HTML'};
+    const names={summary:'сообщение о выпуске и следующие за ним вложения',png:'PNG',short:'краткий HTML',full:'полный HTML',model:'PDF об устройстве модели'};
     const report=id.startsWith('forecast-')?'Предварительный прогноз':'Фактический выпуск';
     const group=chat?.title?`Группа «${chat.title}»`:'Дополнительная группа';
     return sendText(this.env,{chatId:this.env.TELEGRAM_CHAT_ID},`${report}. ${group}: не удалось подтвердить доставку (${names[part]}). Проверьте группу и права бота.`);
@@ -121,11 +127,13 @@ export class CoordinatorObject extends DurableObject {
     return this.mirror(id,eligible,part,primary,d=>sendReportDocument(this.env,d,fileId?{fileId}:payload,12000));
   }
   async invoke(method,args=[]) {
+    if(method==='configureScheduledModes')return this.coordinator.serial(()=>this.scheduledDelivery.configureModes(...args));
+    if(method==='modelNoteStatus')return this.scheduledDelivery.modelNoteStatus();
     if(method==='summary'){
       const [summary,destinations]=await Promise.all([
         this.coordinator.summary(),this.scheduledDelivery.destinations(),
       ]);
-      const scheduledDestinations=destinations.map(d=>({chatId:d.chatId,threadId:d.threadId??null}));
+      const scheduledDestinations=destinations.map(d=>({chatId:d.chatId,threadId:d.threadId??null,mode:d.mode??'full'}));
       return {...summary,scheduledDestinations,scheduledDestination:scheduledDestinations[0]??null};
     }
     if(method==='reportEmail')return this.coordinator.serial(()=>this.reportEmail(...args));
@@ -434,6 +442,14 @@ export default {
       if (admin) {
         if(path==='/admin/gemini-probe'&&request.method==='POST')return reply(await probeGemini(env));
         if(path==='/admin/forecast-summary'&&request.method==='GET')return reply(await object.invoke('forecastSummary'));
+        if(path==='/admin/model-note'&&request.method==='GET')return reply(await object.invoke('modelNoteStatus'));
+        if(path==='/admin/scheduled-modes'&&request.method==='POST'){
+          const form=await request.formData(),file=form.get('document');
+          if(!(file instanceof File)||file.size>100000)return new Response('Invalid PDF',{status:400});
+          return reply(await object.invoke('configureScheduledModes',[form.get('full'),form.get('png'),{
+            day:form.get('day'),name:file.name,bytes:new Uint8Array(await file.arrayBuffer()),
+          }]));
+        }
         if(path==='/admin/forecast-analysis-review'&&request.method==='POST'){const d=await request.json();return reply(await object.invoke('forecastAnalysisReview',[d.data,d.action||'inspect']));}
         if(path==='/admin/forecast-test'&&request.method==='POST')return reply(await object.invoke('forecastTest'));
         if(path==='/admin/engine-probe'&&request.method==='POST'){

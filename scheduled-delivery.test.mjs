@@ -96,3 +96,21 @@ test('deployment keeps an in-flight delivery receipt from the previous version',
   for(const part of ['summary','png','short','full'])await route.send('release',true,part,async()=>sent.push(part));
   assert.deepEqual(sent,['short','full']);
 });
+
+test('the configured PNG-only group receives only actual PNG, and the model note goes to the full group once',async()=>{
+  const data=new Map([['scheduled-destinations',[{chatId:'-2',version:'full'},{chatId:'-3',version:'png'}]]]);
+  const route=new ScheduledDelivery({get:k=>data.get(k),put:(k,v)=>data.set(k,structuredClone(v)),delete:k=>data.delete(k)});
+  const note={day:'2026-11-18',name:'model.pdf',bytes:new Uint8Array([37,80,68,70,45,49])};
+  await route.configureModes('-2','-3',note);
+  const sent=[];
+  for(const id of ['forecast-2026-11-18','actual']){
+    for(const part of ['summary','png','short','full'])await route.send(id,true,part,async d=>sent.push(`${id}:${part}:${d.chatId}`));
+  }
+  assert.deepEqual(sent.filter(x=>x.endsWith(':-3')),['actual:png:-3']);
+  assert.equal(sent.filter(x=>x.endsWith(':-2')).length,8);
+  const deliver=async (d,file)=>sent.push(`${file.name}:${d.chatId}`);
+  await route.sendModelNote('forecast-2026-11-25',deliver);
+  await route.sendModelNote('forecast-2026-11-18',deliver);
+  await route.sendModelNote('forecast-2026-11-18',deliver);
+  assert.deepEqual(sent.filter(x=>x.startsWith('model')),['model.pdf:-2']);
+});
