@@ -120,6 +120,14 @@ export class CoordinatorObject extends DurableObject {
     return this.mirror(id,eligible,part,primary,d=>sendReportDocument(this.env,d,fileId?{fileId}:payload,12000));
   }
   async invoke(method,args=[]) {
+    if(method==='summary'){
+      const [summary,scheduledDestination]=await Promise.all([
+        this.coordinator.summary(),this.storage.get('scheduled-destination'),
+      ]);
+      return {...summary,scheduledDestination:scheduledDestination?{
+        chatId:scheduledDestination.chatId,threadId:scheduledDestination.threadId??null,
+      }:null};
+    }
     if(method==='reportEmail')return this.coordinator.serial(()=>this.reportEmail(...args));
     if(method==='scheduledInvite')return this.coordinator.serial(()=>this.scheduledDelivery.invite());
     if(method==='scheduledConnect')return this.coordinator.serial(()=>this.scheduledDelivery.connect(...args,target=>sendText(this.env,target,
