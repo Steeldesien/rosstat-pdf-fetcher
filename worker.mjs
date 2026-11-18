@@ -9,6 +9,7 @@ import {generateEngineAnalysis,computedEngineSummary,engineArtifactKey,renderEng
 import {ReportFiles,usesMultipart,receiptResult} from './report-files.mjs';
 import {ForecastJobs} from './forecast-jobs.mjs';
 import {forecastAnalysisPlan,generateForecastAnalysis,renderForecastAnalysis} from './forecast-analysis.mjs';
+import {publishSource,publishNarrative} from './report-delivery.mjs';
 import {generateAnalysis,validatePlan,renderAnalysis,compactAnalysis,probeGemini} from './gemini.mjs';
 
 const analysisAvailable=env=>env.ANALYSIS_ENABLED==='true'&&(env.ANALYSIS_PROVIDER==='workers-ai'?!!env.AI:!!env.GEMINI_API_KEY);
@@ -59,12 +60,7 @@ export class CoordinatorObject extends DurableObject {
       }),
       send:async(bytes,item,mode)=>{
         const destination=await ctx.storage.get('destination')||{chatId:env.TELEGRAM_CHAT_ID};
-        const form=new FormData();
-        form.append('chat_id',destination.chatId);
-        if (destination.threadId) form.append('message_thread_id',String(destination.threadId));
-        form.append('caption',deliveryCaption(item,mode));
-        form.append('document',new Blob([bytes],{type:'application/pdf'}),documentName(item.title));
-        return telegram(env,'sendDocument',{body:form});
+        return publishSource({artifactsOnly:env.REPORT_ARTIFACTS_ONLY==='true',transport:(method,options)=>telegram(env,method,options),destination,bytes,item,mode});
       }
     });
     this.forecasts=new ForecastJobs(ctx.storage,{
@@ -215,10 +211,8 @@ export class CoordinatorObject extends DurableObject {
       await this.storage.put(deliveryKey,{status:'sending',at:Date.now()});
       const destination=await this.coordinator.destination()||{chatId:this.env.TELEGRAM_CHAT_ID};
       try {
-        const chunks=[text];
-        for (const chunk of chunks) await telegram(this.env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
-          chat_id:destination.chatId,...(destination.threadId?{message_thread_id:destination.threadId}:{}),text:chunk,link_preview_options:{is_disabled:true}})});
-        await this.storage.put(deliveryKey,{status:'sent',at:Date.now()});
+        const publication=await publishNarrative({artifactsOnly:this.env.REPORT_ARTIFACTS_ONLY==='true',transport:(method,options)=>telegram(this.env,method,options),destination,text});
+        await this.storage.put(deliveryKey,{status:publication.status,at:Date.now()});
       } catch {
         await this.storage.put(deliveryKey,{status:'uncertain',at:Date.now()});status='delivery_uncertain';
       }
@@ -288,7 +282,7 @@ export default {
             try {
               await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
                 chat_id:connected.target.chatId,...(connected.target.threadId?{message_thread_id:connected.target.threadId}:{}),
-                text:'Этот чат подключён. Автоматические PDF будут приходить сюда. Для ручной загрузки выберите тип отчёта в меню команд бота.'
+                text:'Этот чат подключён. Готовые отчёты будут приходить сюда. Для ручной загрузки выберите тип отчёта в меню команд бота.'
               })});
             } catch {
               await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:env.TELEGRAM_CHAT_ID,
@@ -304,7 +298,8 @@ export default {
           const choice=authorized?await object.invoke('selectAnalysis',[update]):null;
           try {await telegram(env,'answerCallbackQuery',{headers:{'Content-Type':'application/json'},body:JSON.stringify({callback_query_id:callback.id,text:choice?'Проверяю свежие выпуски…':'Меню устарело или открыто другим участником. Выберите команду заново.'})});}catch{}
           if (!choice) return new Response('OK');
-          const job=await object.invoke('manual',['callback:'+callback.id,choice.kind,choice.mode==='pdf'?null:choice.mode]);
+          const selectedMode=choice.mode==='pdf'?(env.REPORT_ARTIFACTS_ONLY==='true'?'release':null):choice.mode;
+          const job=await object.invoke('manual',['callback:'+callback.id,choice.kind,selectedMode]);
           if (job.created) {
             try {await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({
               chat_id:chat.id,...(callback.message.message_thread_id?{message_thread_id:callback.message.message_thread_id}:{}),
@@ -321,7 +316,7 @@ export default {
           if (!menu.replay) await telegram(env,'sendMessage',{headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:update.message.chat.id,
             ...(update.message.message_thread_id?{message_thread_id:update.message.message_thread_id}:{}),
             text:REPORTS.find(r=>r.kind===kind).label+'\nЗа какой период нужен анализ? Периоды отсчитываются от последнего выпуска. Повторный запрос готового анализа не обращается к нейронке.',
-            reply_markup:{inline_keyboard:[...analysisModes(kind).map(mode=>[{text:ANALYSIS_LABELS[mode],callback_data:`an:${menu.id}:${mode}`}]),[{text:'Только PDF — без анализа',callback_data:`an:${menu.id}:pdf`}]]}})});
+            reply_markup:{inline_keyboard:[...analysisModes(kind).map(mode=>[{text:ANALYSIS_LABELS[mode],callback_data:`an:${menu.id}:${mode}`}]),...(env.REPORT_ARTIFACTS_ONLY==='true'?[]:[[{text:'Только PDF — без анализа',callback_data:`an:${menu.id}:pdf`}]])]}})});
           return new Response('OK');
         }
         const job=await object.invoke('manual',[update.update_id,kind]);

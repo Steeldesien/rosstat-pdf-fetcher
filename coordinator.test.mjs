@@ -4,6 +4,19 @@ let api;
 try { api = await import('./coordinator.mjs'); }
 catch { assert.fail('The private coordinator has not been implemented yet'); }
 
+test('accepting the source without publishing PDF still permits analysis and all report attachments',async()=>{
+ const f=fixture(),job=await f.coordinator.manual('reports-only','inflation','release');
+ f.coordinator.effects.send=async()=>({message_id:11,source_only:true,text:'Недельная инфляция · период выпуска'});
+ await f.coordinator.claim(job.id,'run');
+ await f.coordinator.deliver(job.id,'run',new TextEncoder().encode('%PDF-test'),{title:'Об оценке индекса потребительских цен с 3 по 9 ноября 2026 года',url:'https://rosstat.gov.ru/a.pdf',stamp:1});
+ assert.equal((await f.coordinator.analysisAccess(job.id,'run')).mode,'release');
+ await f.coordinator.finishAnalysis(job.id,'run','cached','a'.repeat(64));
+ const saved=(await f.coordinator.state()).jobs[job.id];
+ assert.equal(saved.sourceOnly,true);assert.equal(saved.pdfPublished,false);
+ assert.equal((await f.coordinator.cardAccess(job.id,'run','a'.repeat(64))).kind,'inflation');
+ assert.equal(f.sent.length,0);
+});
+
 test('analysis menu offers frequency-specific windows and a PDF-only option',()=>{
   assert.equal(typeof api.analysisModes,'function');
   assert.deepEqual(api.analysisModes('inflation'),['release','m1','m2','m3']);

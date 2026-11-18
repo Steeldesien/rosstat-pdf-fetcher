@@ -50,8 +50,7 @@ export class ForecastJobs{
     if(!job.summary){
       job.summary=job.dry?'dry':'sending';await this.store.put('forecast-job:'+id,job);
       if(!job.dry){
-        const analysis=job.analysis?.status==='ready'?'\n\nНейросетевой разбор:\n'+job.analysis.text.replace(/^Предрелизный прогноз инфляции[^\n]*\n\n/,''):data.format===2?'\n\nНейросетевой разбор недоступен. Расчётный прогноз и файлы сформированы.':'';
-        const text=`Предрелизный прогноз инфляции · ${data.start} — ${data.end}\n\nОжидаемый прирост: ${pct(data.point)}. Интервал прогноза 80%: ${pct(data.lo80)} … ${pct(data.hi80)}.\n\nДанные по ${data.asof}. Это прогноз до публикации Росстата; вечером будет сопоставление с фактом.${analysis}`;
+        const text=`Предварительный прогноз инфляции · ${data.start} — ${data.end}\n\nОжидаемый прирост: ${pct(data.point)}. Интервал прогноза 80%: ${pct(data.lo80)} … ${pct(data.hi80)}.\n\nДанные по ${data.asof}. Это прогноз до публикации Росстата; вечером будет сопоставление с фактом.`;
         try{await this.effects.sendSummary(text);job.summary='sent';}catch{job.summary='uncertain';}
       }
     }

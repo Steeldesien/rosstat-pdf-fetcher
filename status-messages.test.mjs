@@ -1,5 +1,11 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 let api={};try{api=await import('./status-messages.mjs');}catch{}
+
+test('reports-only errors never claim that PDF or neural text was published',()=>{
+ for(const stage of ['analysis_error','card_error']){
+  const text=api.statusText({kind:'inflation',sourceOnly:true},stage);assert.doesNotMatch(text,/PDF|текст анализа уже/);assert.match(text,/Исходный файл получен/);
+ }
+});
 test('scheduled status sends once into topic and edits that same message thereafter',async()=>{
   assert.equal(typeof api.reportProgress,'function');const calls=[];
   const transport=async(method,payload)=>{calls.push({method,payload});return {message_id:77};};

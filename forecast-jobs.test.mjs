@@ -10,7 +10,7 @@ test('new forecast delivery includes cached analysis and requires PNG as well as
  const f=fixture();let sent='',calls=0;f.effects.analyze=async()=>{calls++;return {text:'Краткий разбор прогноза.',key:'b'.repeat(64),cached:false};};f.effects.sendSummary=async text=>{sent=text;};
  await f.jobs.tick();const id=f.calls[0];await f.jobs.claim(id,'run');
  const data={format:2,asof:'2026-11-09',start:'2026-11-10',end:'2026-11-16',point:.147,lo80:.043,hi80:.232,model:'v2',key:'a'.repeat(64)};
- await f.jobs.finish(id,'run',data);await f.jobs.finish(id,'run',data);assert.equal(calls,1);assert.match(sent,/Краткий разбор/);
+ await f.jobs.finish(id,'run',data);await f.jobs.finish(id,'run',data);assert.equal(calls,1);assert.doesNotMatch(sent,/Краткий разбор|Нейросетевой/);assert.match(sent,/Предварительный прогноз/);assert.match(sent,/2026-11-10 — 2026-11-16/);
  const html={name:'test.html',bytes:new TextEncoder().encode('<!doctype html><html>Прогноз</html>')};
  await f.jobs.file(id,'run','short',html);await f.jobs.file(id,'run','full',html);assert.notEqual((await f.jobs.summary())[0].status,'completed');
  assert.equal((await f.jobs.file(id,'run','png')).status,'needs_file');
@@ -30,5 +30,5 @@ test('an uncertain model request is not automatically repeated and the calculati
  await f.jobs.tick();const id=f.calls[0];await f.jobs.claim(id,'run');
  const data={format:2,asof:'2026-11-09',start:'2026-11-10',end:'2026-11-16',point:.147,lo80:.043,hi80:.232,model:'v2',key:'a'.repeat(64)};
  const result=await f.jobs.finish(id,'run',data);await f.jobs.finish(id,'run',data);
- assert.equal(result.analysisStatus,'unavailable');assert.equal(calls,1);assert.match(sent,/разбор недоступен/);assert.match(sent,/\+0,15%/);
+ assert.equal(result.analysisStatus,'unavailable');assert.equal(calls,1);assert.doesNotMatch(sent,/разбор недоступен|Нейросетевой/);assert.match(sent,/\+0,15%/);
 });

@@ -27,7 +27,7 @@ jobs:
       - name: Downloader tests
         run: python -m unittest discover -v
       - name: Coordinator tests
-        run: node --test coordinator.test.mjs analysis.test.mjs workers-ai.test.mjs workers-facts.test.mjs workers-weekly.test.mjs status-messages.test.mjs agy-auth.test.mjs engine-analysis.test.mjs report-files.test.mjs forecast-jobs.test.mjs forecast-analysis.test.mjs
+        run: node --test coordinator.test.mjs analysis.test.mjs workers-ai.test.mjs workers-facts.test.mjs workers-weekly.test.mjs status-messages.test.mjs agy-auth.test.mjs engine-analysis.test.mjs report-files.test.mjs report-delivery.test.mjs forecast-jobs.test.mjs forecast-analysis.test.mjs
       - name: Report rendering tools
         if: vars.INFLATION_ENGINE_REPOSITORY != ''
         run: |

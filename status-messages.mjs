@@ -4,8 +4,9 @@ export function statusText(job,stage){
   let label=REPORTS.find(r=>r.kind===job.kind)?.label||'Отчёт Росстата';
   const quarter=job.gdp_period?.match(/^(\d{4})-Q([1-4])$/);
   if(quarter)label+=` (${['I','II','III','IV'][Number(quarter[2])-1]} квартал ${quarter[1]} года)`;
-  const texts={search:`Начат поиск файла: ${label}.`,downloading:`Начата выгрузка файлов: ${label}.`,loaded:`Файл загружен: ${label}.`,error:`Ошибка при получении: ${label}.`,analysis_error:`Ошибка при получении анализа: ${label}. PDF уже отправлен.`};
-  if(stage==='card_error')return `Ошибка при получении изображения: ${label}. PDF и текст анализа уже отправлены.`;
+  const source=job.sourceOnly?'Исходный файл получен.':'PDF уже отправлен.';
+  const texts={search:`Начат поиск файла: ${label}.`,downloading:`Начата выгрузка файлов: ${label}.`,loaded:`Файл загружен: ${label}.`,error:`Ошибка при получении: ${label}.`,analysis_error:`Ошибка при получении анализа: ${label}. ${source}`};
+  if(stage==='card_error')return job.sourceOnly?`Ошибка при получении изображения: ${label}. Исходный файл получен.`:`Ошибка при получении изображения: ${label}. PDF и текст анализа уже отправлены.`;
   if(!texts[stage])throw Error('Unknown report progress');return texts[stage];
 }
 

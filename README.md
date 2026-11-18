@@ -71,6 +71,8 @@ Native engine reports represent one weekly release; existing rolling-period anal
 
 # Pre-release delivery
 
-The private coordinator starts the Wednesday forecast at 14:00 Moscow time. The private engine preserves the original model, renders a forecast PNG and two static HTML files, and saves the forecast before delivery. The forecast is explicitly distinguished from the later Rosstat actual release.
+The private coordinator starts the Wednesday forecast at 14:00 Moscow time. The private engine preserves the original model, renders a forecast PNG and two static HTML files, and saves the forecast before delivery. The forecast is explicitly distinguished from the later Rosstat actual release. The accompanying message contains the forecast and period; neural commentary is not published as chat text.
 
-Workers AI explains only the supplied frozen forecast factors. Commentary is cached separately from actual-release analysis; successful and uncertain requests are not automatically submitted again. If commentary is unavailable, the numerical forecast and files are still delivered with that status. The PNG is rendered by code, not an image generation API. Private dry runs validate all three files and the analysis without Telegram delivery.
+Workers AI explains only the supplied frozen forecast factors. Commentary is cached separately from actual-release analysis; successful and uncertain requests are not automatically submitted again. The PNG is rendered by code, not an image generation API. Private dry runs validate all three files and the analysis without Telegram delivery.
+
+With `REPORT_ARTIFACTS_ONLY=true`, the source Rosstat PDF remains an internal processing input. Its dated caption is sent as a plain announcement, followed by generated report attachments; separate neural narrative messages are suppressed. This policy does not alter report calculations or embedded report commentary. The PDF-only menu option is hidden under this policy.

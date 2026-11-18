@@ -368,10 +368,11 @@ export class Coordinator {
       try {
         const result=await this.effects.send(bytes,item,job.mode);
         job.phase=job.analysisMode?'running':'completed'; job.pdfDelivered=true;job.messageId=result.message_id; job.deliveredAt=this.effects.now();
+        job.sourceOnly=!!result.source_only;job.pdfPublished=!job.sourceOnly;
         job.fileName=result.document?.file_name||null;
         job.publicationStamp=Number.isFinite(item.stamp)?item.stamp:null;
         job.receivedStamp=Number.isFinite(item.receivedStamp)?item.receivedStamp:null;
-        job.caption=result.caption||null;
+        job.caption=result.caption||result.text||null;
         job.sourceUrl=item.url;
         job.sourceTitle=item.title;
         if (job.targetId && !state.completed.includes(job.targetId)) state.completed.push(job.targetId);
