@@ -6,6 +6,10 @@ on:
         description: Check encrypted SMTP without signing in or sending mail
         type: boolean
         default: true
+      include_model_note:
+        description: Include the configured one-time PDF in the test email
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -33,6 +37,10 @@ jobs:
         if: ${{ !inputs.connection_only }}
         env:
           REPORT_EMAIL_SMTP: ${{ secrets.REPORT_EMAIL_SMTP }}
+          REPORT_EMAIL_MODEL_NOTE_JOB: ${{ inputs.include_model_note && secrets.REPORT_EMAIL_MODEL_NOTE_JOB || '' }}
+          REPORT_EMAIL_MODEL_NOTE_1: ${{ inputs.include_model_note && secrets.REPORT_EMAIL_MODEL_NOTE_1 || '' }}
+          REPORT_EMAIL_MODEL_NOTE_2: ${{ inputs.include_model_note && secrets.REPORT_EMAIL_MODEL_NOTE_2 || '' }}
+          REPORT_EMAIL_MODEL_NOTE_3: ${{ inputs.include_model_note && secrets.REPORT_EMAIL_MODEL_NOTE_3 || '' }}
           INFLATION_ENGINE_REPOSITORY: ${{ vars.INFLATION_ENGINE_REPOSITORY }}
           INFLATION_ENGINE_DEPLOY_KEY: ${{ secrets.INFLATION_ENGINE_DEPLOY_KEY }}
-        run: python email_smoke.py
+        run: python email_smoke.py ${{ inputs.include_model_note && '--with-model-note' || '' }}

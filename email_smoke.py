@@ -5,7 +5,7 @@ import json
 import os
 import sys
 
-from report_email import gmail_connection, message
+from report_email import forecast_model_note, gmail_connection, message
 
 
 def main():
@@ -22,13 +22,20 @@ def main():
     module, _, _ = load_engine()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         result, files = module.prepare_forecast(refresh=False)
-    mail = message(sender,[recipient],'forecast',result,files)
+    note = None
+    if sys.argv[1:] == ['--with-model-note']:
+        job = os.environ['REPORT_EMAIL_MODEL_NOTE_JOB']
+        note = forecast_model_note(job, 'forecast')
+        if note is None:
+            raise ValueError('No model PDF was configured for the test')
+    mail = message(sender,[recipient],'forecast',result,files,model_note=note)
     mail.replace_header('Subject','[Тест] '+str(mail['Subject']))
     with gmail_connection() as smtp:
         smtp.login(sender,config['app_password'])
         if smtp.send_message(mail,from_addr=sender,to_addrs=[recipient]):
             raise RuntimeError('The designated test inbox was rejected')
-        print('Gmail accepted one test email with PNG and two HTML attachments.',flush=True)
+        attachment_types = ', '.join(part.get_content_type() for part in mail.iter_attachments())
+        print('Gmail accepted one test email. Attachments:', attachment_types, flush=True)
 
 
 if __name__ == '__main__':

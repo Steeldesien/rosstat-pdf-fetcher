@@ -119,7 +119,10 @@ def send_report(broker, identity, mode, data, files, *, eligible):
             except Exception:
                 status = 'uncertain'
             broker.call('email-result', json={**ticket,'status':status})
-            if status!='accepted':
+            if status == 'accepted':
+                types = ', '.join(part.get_content_type() for part in mail.iter_attachments())
+                print('Gmail accepted report email. Attachments:', types, flush=True)
+            else:
                 print('Report email:',status,flush=True)
     except Exception as error:
         print('Report email could not be confirmed:',type(error).__name__,flush=True)
