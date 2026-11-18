@@ -107,13 +107,14 @@ export class CoordinatorObject extends DurableObject {
       await this.scheduledDelivery.send(id,eligible,part,async target=>{
         if(String(target.chatId)===String(primary.chatId)&&target.threadId===primary.threadId)return;
         return deliver(target);
-      },(jobId,part)=>this.notifyScheduledFailure(jobId,part));
+      },(jobId,part,chat)=>this.notifyScheduledFailure(jobId,part,chat));
     }catch{console.log('Additional scheduled delivery could not be recorded');}
   }
-  notifyScheduledFailure(id,part){
+  notifyScheduledFailure(id,part,chat){
     const names={summary:'сообщение о выпуске и следующие за ним вложения',png:'PNG',short:'краткий HTML',full:'полный HTML'};
     const report=id.startsWith('forecast-')?'Предварительный прогноз':'Фактический выпуск';
-    return sendText(this.env,{chatId:this.env.TELEGRAM_CHAT_ID},`${report}. Дополнительная группа: не удалось подтвердить доставку (${names[part]}). Проверьте группу и права бота.`);
+    const group=chat?.title?`Группа «${chat.title}»`:'Дополнительная группа';
+    return sendText(this.env,{chatId:this.env.TELEGRAM_CHAT_ID},`${report}. ${group}: не удалось подтвердить доставку (${names[part]}). Проверьте группу и права бота.`);
   }
   async mirrorDocument(id,eligible,part,primary,result,payload){
     const fileId=result.document?.file_id;
@@ -121,12 +122,11 @@ export class CoordinatorObject extends DurableObject {
   }
   async invoke(method,args=[]) {
     if(method==='summary'){
-      const [summary,scheduledDestination]=await Promise.all([
-        this.coordinator.summary(),this.storage.get('scheduled-destination'),
+      const [summary,destinations]=await Promise.all([
+        this.coordinator.summary(),this.scheduledDelivery.destinations(),
       ]);
-      return {...summary,scheduledDestination:scheduledDestination?{
-        chatId:scheduledDestination.chatId,threadId:scheduledDestination.threadId??null,
-      }:null};
+      const scheduledDestinations=destinations.map(d=>({chatId:d.chatId,threadId:d.threadId??null}));
+      return {...summary,scheduledDestinations,scheduledDestination:scheduledDestinations[0]??null};
     }
     if(method==='reportEmail')return this.coordinator.serial(()=>this.reportEmail(...args));
     if(method==='scheduledInvite')return this.coordinator.serial(()=>this.scheduledDelivery.invite());
@@ -136,7 +136,7 @@ export class CoordinatorObject extends DurableObject {
     if(method==='tick'){
       if(this.env.PRE_RELEASE_FORECAST_ENABLED==='true')await this.coordinator.serial(()=>this.forecasts.tick());
       const result=await this.coordinator.tick();
-      try{await this.coordinator.serial(()=>this.scheduledDelivery.retryAlerts((id,part)=>this.notifyScheduledFailure(id,part)));}
+      try{await this.coordinator.serial(()=>this.scheduledDelivery.retryAlerts((id,part,chat)=>this.notifyScheduledFailure(id,part,chat)));}
       catch{console.log('Could not process pending scheduled delivery alerts');}
       return result;
     }
@@ -364,12 +364,13 @@ export default {
             return new Response('OK');
           }
           if(isOwner&&name==='disconnect_reports'&&!code){
-            await object.invoke('scheduledDisconnect');
-            await sendText(env,{chatId:chat.id},'Дополнительная группа отключена.');
+            const removed=await object.invoke('scheduledDisconnect');
+            const text=removed?.title?`Рассылка в группу «${removed.title}» отключена.`:removed?'Последняя дополнительная группа отключена.':'Дополнительных групп нет.';
+            await sendText(env,{chatId:chat.id},text);
             return new Response('OK');
           }
           if(name==='connect'&&code&&['group','supergroup'].includes(chat?.type)){
-            const target={type:chat.type,chatId:String(chat.id),threadId:message.message_thread_id};
+            const target={type:chat.type,chatId:String(chat.id),threadId:message.message_thread_id,title:chat.title};
             try{await object.invoke('scheduledConnect',[code.toLowerCase(),target]);}
             catch{
               try{await sendText(env,{chatId:env.TELEGRAM_CHAT_ID},'Не удалось подтвердить подключение дополнительной группы. Проверьте право бота отправлять сообщения и повторите команду с тем же кодом, пока он действует.');}
