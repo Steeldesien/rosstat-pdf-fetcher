@@ -120,6 +120,7 @@ export class CoordinatorObject extends DurableObject {
     return this.mirror(id,eligible,part,primary,d=>sendReportDocument(this.env,d,fileId?{fileId}:payload,12000));
   }
   async invoke(method,args=[]) {
+    if(method==='reportEmail')return this.coordinator.serial(()=>this.reportEmail(...args));
     if(method==='scheduledInvite')return this.coordinator.serial(()=>this.scheduledDelivery.invite());
     if(method==='scheduledConnect')return this.coordinator.serial(()=>this.scheduledDelivery.connect(...args,target=>sendText(this.env,target,
       'Группа подключена к автоматической рассылке недельной инфляции. Здесь будут приходить предварительный прогноз и фактический выпуск по расписанию.')));
@@ -219,6 +220,30 @@ export class CoordinatorObject extends DurableObject {
     }
     if (!['manual','resumeReports','tick','claim','deliver','backoff','waiting','release','progress','summary','importCompleted','connect','destination','analysisMenu','selectAnalysis'].includes(method)) throw new Error('Unknown operation');
     return this.coordinator[method](...args);
+  }
+
+  async reportEmail(operation,data){
+    const {job_id:id,run_id:owner,key,mode,status}=data;
+    if(!/^[a-f0-9]{64}$/.test(key))throw Error('Invalid report identity');
+    if(mode==='actual'){
+      const selection=await this.coordinator.cardAccess(id,owner,key);
+      if(!scheduledRelease(selection.mirrorJob))return {status:'skipped'};
+    }else if(mode==='forecast'){
+      const job=await this.forecasts.access(id,owner);
+      if(job.dry||job.result?.key!==key||(Date.now()>=job.cutoff&&operation!=='result'))return {status:'skipped'};
+    }else throw Error('Invalid email report mode');
+    const receiptKey=`report-email:${mode}:${id}`;
+    const receipt=await this.storage.get(receiptKey);
+    if(operation==='result'){
+      if(receipt?.status!=='sending'||receipt.owner!==owner||!['accepted','partial','rejected','uncertain'].includes(status))throw Error('Invalid email receipt');
+      await this.storage.put(receiptKey,{status,at:Date.now()});
+      return {status};
+    }
+    if(receipt)return {status:receipt.status};
+    if(operation==='status')return {status:'ready'};
+    if(operation!=='reserve')throw Error('Invalid email operation');
+    await this.storage.put(receiptKey,{status:'sending',owner,at:Date.now()});
+    return {status:'reserved'};
   }
 
   async analyzeJob(id,owner,plan,reason=null) {
@@ -447,6 +472,7 @@ export default {
         const data=form ? Object.fromEntries(form) : await request.json();
         if(path==='/runner/agy-auth'&&validId(data.session_id)&&validId(data.run_id))return reply(await object.invoke('agyAuth',['runner',data.session_id,data.run_id,data.op,data]));
         if (!validId(data.job_id) || !validId(data.run_id)) return new Response('Invalid request',{status:400});
+        if(['/runner/email-status','/runner/email-reserve','/runner/email-result'].includes(path))return reply(await object.invoke('reportEmail',[path.slice('/runner/email-'.length),data]));
         if(path==='/runner/forecast-claim')return reply(await object.invoke('forecastClaim',[data.job_id,data.run_id]));
         if(path==='/runner/forecast-finish')return reply(await object.invoke('forecastFinish',[data.job_id,data.run_id,data.result]));
         if(path==='/runner/forecast-failure')return reply(await object.invoke('forecastFailure',[data.job_id,data.run_id,data.error]));

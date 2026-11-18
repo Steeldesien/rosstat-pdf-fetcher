@@ -33,6 +33,7 @@ jobs:
       - name: Compute and preserve pre-release forecast
         env:
           FORECAST_ID: ${{ inputs.forecast_id }}
+          REPORT_EMAIL_SMTP: ${{ vars.REPORT_EMAIL_ENABLED == 'true' && secrets.REPORT_EMAIL_SMTP || '' }}
           BROKER_URL: ${{ secrets.BROKER_URL }}
           BROKER_TOKEN: ${{ secrets.BROKER_TOKEN }}
           INFLATION_ENGINE_REPOSITORY: ${{ vars.INFLATION_ENGINE_REPOSITORY }}

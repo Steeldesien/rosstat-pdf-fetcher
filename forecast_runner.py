@@ -2,6 +2,7 @@
 import contextlib,io,os,re
 from runner import Broker
 from engine_client import load_engine,_persist
+from report_email import send_report
 
 def main():
     job=os.environ['FORECAST_ID']
@@ -16,6 +17,7 @@ def main():
     if not _persist(root,env):raise RuntimeError('Published forecast history could not be persisted')
     done=broker.call('forecast-finish',json={**identity,'result':result})
     if done.get('status')=='late':print('Forecast saved after publication window; no pre-release notification sent');return
+    send_report(broker,{**identity,'key':result['key']},'forecast',result,lambda:files,eligible=not claim.get('dry'))
     for kind in ['png','short','full']:
         status=broker.call('forecast-file',json={**identity,'kind':kind})
         if status['status']=='needs_file':

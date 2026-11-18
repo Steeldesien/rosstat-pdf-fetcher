@@ -2,6 +2,7 @@
 import contextlib,importlib.util,io,json,os,re,subprocess,sys,tempfile,threading
 from pathlib import Path
 import requests
+from report_email import send_report
 _loaded=None
 
 def load_engine():
@@ -67,12 +68,9 @@ def analyze(broker,job,plan,known=None):
     card=result.get('card')
     if not card:return result
     broker.reports_expected=True
-    # Ask the broker first: Telegram file IDs allow all three files to be reused without rendering.
-    statuses={'png':broker.call('card',json={**identity,'key':card['key']})}
-    for kind in ['short','full']:
-        statuses[kind]=broker.call('report',json={**identity,'key':card['key'],'kind':kind})
-    if any(s.get('status') not in ('completed','needs_image','needs_file') for s in statuses.values()):raise RuntimeError('Report delivery outcome is uncertain')
-    if any(s.get('status')=='needs_image' or s.get('status')=='needs_file' for s in statuses.values()):
+    def ensure_files():
+        nonlocal files,loaded,report
+        if files is not None:return files
         if not loaded:
             loaded=load_engine()
             with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
@@ -81,6 +79,17 @@ def analyze(broker,job,plan,known=None):
                 raise RuntimeError('Forecast assessment could not be saved to private history')
         with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
             files=loaded[0].render_artifacts(plan,report,card['text'])
+        return files
+
+    send_report(broker,{**identity,'key':card['key']},'actual',plan,ensure_files,
+                eligible=job.get('mode')=='scheduled' and not job.get('resume_source'))
+    # Ask the broker first: Telegram file IDs allow all three files to be reused without rendering.
+    statuses={'png':broker.call('card',json={**identity,'key':card['key']})}
+    for kind in ['short','full']:
+        statuses[kind]=broker.call('report',json={**identity,'key':card['key'],'kind':kind})
+    if any(s.get('status') not in ('completed','needs_image','needs_file') for s in statuses.values()):raise RuntimeError('Report delivery outcome is uncertain')
+    if any(s.get('status')=='needs_image' or s.get('status')=='needs_file' for s in statuses.values()):
+        files=ensure_files()
         for kind,status in statuses.items():
             if status.get('status') not in ('needs_image','needs_file'):continue
             path=files[kind]
