@@ -79,11 +79,13 @@ def message(sender, recipients, mode, data, files, *, model_note=None):
     mail['Message-ID'] = make_msgid(domain=sender.rsplit('@', 1)[-1])
     mail['Subject'] = subject
     attachments = 'Во вложениях — PNG-карточка, краткий и полный отчёты в HTML.'
+    if 'short_email' in files and 'full_email' in files:
+        attachments += ' Для интерактивных графиков скачайте HTML и откройте его в браузере.'
     if model_note is not None:
         attachments += ' Также прилагаем описание модели прогноза в PDF.'
     mail.set_content('Коллеги, добрый день!\n\n' + body + '\n\n' + attachments + '\n\nАвтоматическая рассылка по недельной инфляции.')
     for kind, (main, sub) in KINDS.items():
-        path = files[kind]
+        path = files.get(f'{kind}_email', files[kind]) if sub == 'html' else files[kind]
         if path.suffix.lower() != '.' + sub:
             raise ValueError('Unexpected report attachment type')
         mail.add_attachment(path.read_bytes(), maintype=main, subtype=sub, filename=path.name)
